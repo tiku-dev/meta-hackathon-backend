@@ -1,0 +1,207 @@
+"""Finance: fee schedules, invoices, payment attempts/events, receipts."""
+from decimal import Decimal
+
+from django.conf import settings
+from django.db import models
+
+from core.models import TimeStampedModel
+
+CURRENCIES = [("XAF", "XAF (Central African CFA franc)"), ("USD", "USD")]
+PAYMENT_STATUSES = [
+    ("created", "Created"), ("pending", "Pending"), ("succeeded", "Succeeded"),
+    ("failed", "Failed"), ("cancelled", "Cancelled"), ("refunded", "Refunded"),
+    ("needs_review", "Needs review"),
+]
+
+
+class FeeSchedule(TimeStampedModel):
+    """Configurable fee for a scope + term (blueprint SS4). Never hard-coded."""
+
+    academic_unit = models.ForeignKey(
+        "academics.AcademicUnit", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="fee_schedules")
+    program = models.ForeignKey(
+        "academics.Program", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="fee_schedules")
+    level = models.ForeignKey(
+        "academics.Level", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="fee_schedules")
+    academic_year = models.ForeignKey(
+        "academics.AcademicYear", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="fee_schedules")
+    semester = models.ForeignKey(
+        "academics.Semester", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="fee_schedules")
+    fee_type = models.CharField(max_length=40, default="registration")
+    student_category = models.CharField(max_length=32, blank=True)
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="XAF")
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    # Enrollment gate: percent of the invoice that must be *verified paid*…
+    registration_threshold_type = models.CharField(
+        max_length=8, choices=[("percent", "Percent"), ("amount", "Fixed amount")],
+        default="percent")
+    registration_threshold_value = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal("100"))
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        scope = self.program or self.academic_unit or "University"
+        return f"{scope} {self.fee_type}: {self.amount} {self.currency}"
+
+    def required_for_registration(self, total_due: Decimal) -> Decimal:
+        if self.registration_threshold_type == "amount":
+            return min(self.registration_threshold_value, total_due)
+        return (total_due * self.registration_threshold_value / Decimal("100")).quantize(
+            Decimal("0.01"))
+
+
+class Invoice(TimeStampedModel):
+    """A student's obligation. Amount/currency/FX are snapshotted at issue."""
+
+    STATUS_CHOICES = [
+        ("unpaid", "Unpaid"), ("partially_paid", "Partially paid"),
+        ("paid", "Paid"), ("overdue", "Overdue"), ("waived", "Waived"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    student = models.ForeignKey(
+        "accounts.StudentProfile", on_delete=models.CASCADE, related_name="invoices")
+    fee_schedule = models.ForeignKey(
+        FeeSchedule, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="invoices")
+    academic_year = models.ForeignKey(
+        "academics.AcademicYear", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="invoices")
+    semester = models.ForeignKey(
+        "academics.Semester", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="invoices")
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="XAF")
+    total_due = models.DecimalField(max_digits=14, decimal_places=2)
+    amount_paid = models.DecimalField(max_digits=14, decimal_places=2,
+                                      default=Decimal("0"))
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="unpaid")
+    due_date = models.DateTimeField(null=True, blank=True)
+    # Explicit alternate-currency quote (e.g. USD equivalent), admin-approved.
+    alt_currency = models.CharField(max_length=3, blank=True)
+    alt_amount = models.DecimalField(max_digits=14, decimal_places=2,
+                                     null=True, blank=True)
+    fx_rate = models.DecimalField(max_digits=18, decimal_places=6,
+                                  null=True, blank=True)
+    fx_quoted_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Invoice#{self.id} {self.student} {self.total_due} {self.currency}"
+
+    @property
+    def balance(self) -> Decimal:
+        return max(Decimal("0"), self.total_due - self.amount_paid)
+
+    def refresh_status(self):
+        if self.status in ("waived", "cancelled"):
+            return
+        if self.amount_paid >= self.total_due:
+            self.status = "paid"
+        elif self.amount_paid > 0:
+            self.status = "partially_paid"
+        else:
+            self.status = "unpaid"
+
+class PaymentAttempt(TimeStampedModel):
+    """One attempt to pay an invoice through a provider. Internal source of truth."""
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE,
+                                related_name="payment_attempts")
+    provider = models.CharField(max_length=24, default="mock", db_index=True)
+    reference = models.CharField(max_length=64, unique=True, db_index=True,
+                                 help_text="Internal unique reference.")
+    provider_reference = models.CharField(max_length=128, blank=True, db_index=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3, default="XAF")
+    status = models.CharField(max_length=16, choices=PAYMENT_STATUSES, default="created",
+                              db_index=True)
+    channel = models.CharField(max_length=32, blank=True,
+                               help_text="e.g. cm.mtn, cm.orange, card")
+    checkout_url = models.URLField(blank=True)
+    failure_reason = models.CharField(max_length=255, blank=True)
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="payment_attempts")
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.reference} {self.amount} {self.currency} ({self.status})"
+
+
+class PaymentEvent(TimeStampedModel):
+    """Raw provider webhook/verification event. Deduped on (provider, event_id)."""
+
+    provider = models.CharField(max_length=24, db_index=True)
+    event_id = models.CharField(max_length=128, db_index=True)
+    event_type = models.CharField(max_length=80, blank=True)
+    reference = models.CharField(max_length=128, blank=True, db_index=True)
+    payload = models.JSONField(default=dict, blank=True)
+    processed = models.BooleanField(default=False)
+    outcome = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        unique_together = [("provider", "event_id")]
+        ordering = ["-created_at"]
+
+
+class Receipt(TimeStampedModel):
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="receipts")
+    payment_attempt = models.OneToOneField(
+        PaymentAttempt, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="receipt")
+    receipt_number = models.CharField(max_length=40, unique=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3, default="XAF")
+    issued_at = models.DateTimeField(auto_now_add=True)
+    file_path = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["-issued_at"]
+
+    def __str__(self):
+        return self.receipt_number
+
+
+class OfflinePaymentAdjustment(TimeStampedModel):
+    """Approved offline payment (cash/bank) recorded by finance with evidence."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending approval"), ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE,
+                                related_name="offline_adjustments")
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3, default="XAF")
+    method = models.CharField(max_length=40, help_text="cash, bank transfer, ...")
+    evidence = models.CharField(max_length=255, blank=True,
+                                help_text="Reference/path of supporting evidence.")
+    reason = models.TextField()
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="pending")
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="offline_adjustments")
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="approved_offline_adjustments")
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]

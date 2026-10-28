@@ -1,0 +1,19 @@
+# Secrets - real (sandbox) API keys live in backend/.env: NEVER commit it
+.env
+*.env
+!/.env.example
+!/backend/.env.example
+
+# Python / Django
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+backend/db.sqlite3
+backend/media/
+backend/staticfiles/
+
+# Test / tooling caches
+.pytest_cache/
+schema-errors.txt
+pytest-errors.txt

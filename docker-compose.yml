@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: school
+      POSTGRES_USER: school
+      POSTGRES_PASSWORD: school
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build: .
+    # backend/.env carries the sandbox payment keys (mounted via .:/app
+    # below); these entries win for DB/Django. .env is never committed.
+    environment:
+      DATABASE_URL: postgres://school:school@db:5432/school
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: dev-secret-change-me
+      PAYMENT_PROVIDER: notchpay
+      PAYMENT_ALLOW_MOCK: "0"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    command: sh -c "python manage.py migrate --noinput && python manage.py seed_demo && python manage.py runserver 0.0.0.0:8000"
+
+volumes:
+  pgdata:
