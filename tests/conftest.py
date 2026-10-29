@@ -24,7 +24,10 @@ def mock_payment_provider(settings):
 def make_user(email, role, **kwargs):
     from accounts.models import User, UserRole
 
-    user = User(email=email, username=email, is_active=True, **kwargs)
+    # Students get their matricule as username (mirrors activation); the
+    # student fixture below links matricule UB26-COMP-0001.
+    username = "UB26-COMP-0001" if role == "student" else email
+    user = User(email=email, username=username, is_active=True, **kwargs)
     user.set_password(PASSWORD)
     user.save()
     UserRole.objects.create(user=user, role=role)

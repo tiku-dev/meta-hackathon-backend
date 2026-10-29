@@ -9,15 +9,17 @@ BASE = "http://127.0.0.1:8017/api"
 PW = "DemoPass123!"
 
 
-def login(email):
-    r = requests.post(f"{BASE}/auth/token/", json={"email": email, "password": PW})
+def login(identifier):
+    # Staff sign in with email; students with their matricule. The backend
+    # accepts either under `username` (or the dedicated aliases).
+    r = requests.post(f"{BASE}/auth/token/", json={"username": identifier, "password": PW})
     r.raise_for_status()
     return {"Authorization": f"Bearer {r.json()['access']}"}
 
 
 def main():
     admin = login("admin@demo.edu")
-    student = login("student@demo.edu")
+    student = login("UB26-CSC-0002")
     lecturer = login("lecturer@demo.edu")
 
     overview = requests.get(f"{BASE}/admin/overview", headers=admin).json()

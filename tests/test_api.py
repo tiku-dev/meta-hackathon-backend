@@ -24,7 +24,9 @@ def assert_error(resp, code, status=400):
 
 @pytest.mark.django_db
 def test_login_roles_and_activation(api, world):
-    """SS11.3: matricule issued before activation; token single-use/hashed."""
+    """SS11.3: activation needs matricule+email+code; login uses matricule."""
+    from accounts.models import User
+
     admin = auth(api, world["admin"])
     resp = admin.get("/api/admin/students/")
     assert resp.status_code == 200
@@ -36,25 +38,62 @@ def test_login_roles_and_activation(api, world):
     assert token_obj.token_hash != issued["activation_token"]
     assert len(token_obj.token_hash) == 64
 
+    prospect = world["prospect"]
+    good = {"matricule": issued["matricule"], "email": prospect.email,
+            "activation_code": issued["activation_token"],
+            "password": "NewPass123!"}
     api2 = type(api)()
-    resp = api2.post("/api/auth/activate", {
-        "token": issued["activation_token"], "password": "NewPass123!"}, format="json")
-    assert resp.status_code == 201, resp.content
-    # reuse is rejected
-    resp = api2.post("/api/auth/activate", {
-        "token": issued["activation_token"], "password": "NewPass123!"}, format="json")
-    assert_error(resp, "ACTIVATION_TOKEN_USED")
-    resp = api2.post("/api/auth/activate", {"token": "bogus", "password": "NewPass123!"}, format="json")
+
+    # Wrong matricule / email / code are all rejected with an error.
+    resp = api2.post("/api/auth/activate",
+                     {**good, "matricule": "UB26-XXXX-9999"}, format="json")
+    assert_error(resp, "ACTIVATION_MATRICULE_MISMATCH")
+    resp = api2.post("/api/auth/activate",
+                     {**good, "email": "other@test.edu"}, format="json")
+    assert_error(resp, "ACTIVATION_EMAIL_MISMATCH")
+    resp = api2.post("/api/auth/activate",
+                     {**good, "activation_code": "bogus"}, format="json")
     assert_error(resp, "ACTIVATION_TOKEN_INVALID")
-    # login with the new password works and carries roles
-    resp = api2.post("/api/auth/token/", {"email": "prospect@test.edu", "password": "NewPass123!"}, format="json")
-    assert resp.status_code == 200
-    assert "student" in resp.data["access"] or resp.data.get("access")
+
+    # The form cannot override the admin-entered names: even sneaking
+    # name/phone fields into the payload must not change them.
+    resp = api2.post("/api/auth/activate",
+                     {**good, "first_name": "Changed", "last_name": "Name",
+                      "phone": "+237600000000"}, format="json")
+    assert resp.status_code == 201, resp.content
+    assert resp.data["name"] == prospect.full_name
+    prospect.refresh_from_db()
+    assert prospect.first_name == "Pat" and prospect.last_name == "Prospect"
+    user = User.objects.get(email=prospect.email)
+    assert user.username == issued["matricule"]
+    assert user.first_name == "Pat" and user.last_name == "Prospect"
+
+    # reuse is rejected
+    resp = api2.post("/api/auth/activate", good, format="json")
+    assert_error(resp, "ACTIVATION_TOKEN_USED")
+
+    # Students log in with their MATRICULE (any field alias) + password.
+    for payload in ({"matricule": issued["matricule"], "password": "NewPass123!"},
+                    {"username": issued["matricule"], "password": "NewPass123!"}):
+        resp = api2.post("/api/auth/token/", payload, format="json")
+        assert resp.status_code == 200, resp.content
+        assert resp.data.get("access")
+    # Email sign-in still works (staff + backward compatibility).
+    resp = api2.post("/api/auth/token/",
+                     {"email": prospect.email, "password": "NewPass123!"}, format="json")
+    assert resp.status_code == 200, resp.content
+    access_token = resp.data["access"]
+    # Unknown matricule fails cleanly (401, never a 500).
+    resp = api2.post("/api/auth/token/",
+                     {"username": "UB99-XXXX-9999", "password": "NewPass123!"}, format="json")
+    assert resp.status_code == 401, resp.content
     me = type(api)()
-    me.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['access']}")
+    me.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
     resp = me.get("/api/student/me")
     assert resp.status_code == 200
     assert resp.data["student"]["matricule"] == issued["matricule"]
+    # The linked pre-seeded student also has a matricule username.
+    assert world["student_user"].username == world["student"].matricule
 
 
 @pytest.mark.django_db

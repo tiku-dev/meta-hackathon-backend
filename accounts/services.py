@@ -84,14 +84,19 @@ def issue_matricule(actor, student: StudentProfile, *, send_email: bool = True) 
         entity=student,
         summary={"matricule": student.matricule, "token_expires_at": token.expires_at.isoformat()},
     )
-    link = f"{settings.FRONTEND_BASE_URL}/activate?token={raw}"
+    link = (
+        f"{settings.FRONTEND_BASE_URL}/activate"
+        f"?matricule={student.matricule}&email={student.email}&token={raw}"
+    )
     if send_email:
         from django.core.mail import send_mail
 
         send_mail(
             "Activate your student account",
             f"Your matricule is {student.matricule}.\n"
+            f"Your email on record is {student.email}.\n"
             f"Activate your account within {settings.ACTIVATION_TOKEN_TTL_HOURS} hours: {link}\n"
+            f"You will need your matricule, this email address and your activation code.\n"
             f"Activation code: {raw}",
             settings.DEFAULT_FROM_EMAIL,
             [student.email],
@@ -101,26 +106,43 @@ def issue_matricule(actor, student: StudentProfile, *, send_email: bool = True) 
             "activation_link": link, "expires_at": token.expires_at}
 
 @transaction.atomic
-def activate_account(raw_token: str, password: str, *, first_name="", last_name="",
-                     phone="") -> StudentProfile:
-    """Claim a one-time token, create the login user, link the profile."""
+def activate_account(activation_code: str, password: str, *, matricule: str,
+                     email: str) -> StudentProfile:
+    """Activate a student account with admissions-issued credentials only.
+
+    The student supplies their matricule, email, one-time activation code
+    and a new password. Every value must match the record admissions
+    created: a mismatch on matricule or email raises an error, as does an
+    invalid/expired/used/revoked code. Display names always come from the
+    admin-entered student record; the form can never set them.
+    """
     token = (
         ActivationToken.objects.select_related("student")
-        .filter(token_hash=_hash(raw_token))
+        .filter(token_hash=_hash((activation_code or "").strip()))
         .first()
     )
     if token is None:
-        raise BusinessError("Invalid activation token.", code="ACTIVATION_TOKEN_INVALID")
+        raise BusinessError("Invalid activation code.", code="ACTIVATION_TOKEN_INVALID")
     if token.used_at is not None:
-        raise BusinessError("This activation token has already been used.",
+        raise BusinessError("This activation code has already been used.",
                             code="ACTIVATION_TOKEN_USED")
     if token.revoked_at is not None:
-        raise BusinessError("This activation token has been revoked.",
+        raise BusinessError("This activation code has been revoked.",
                             code="ACTIVATION_TOKEN_REVOKED")
     if token.expires_at <= timezone.now():
-        raise BusinessError("This activation token has expired.",
+        raise BusinessError("This activation code has expired. Ask admissions to re-issue it.",
                             code="ACTIVATION_TOKEN_EXPIRED")
     student = token.student
+    if (student.matricule or "").casefold() != (matricule or "").strip().casefold():
+        raise BusinessError(
+            "This activation code does not match the matricule you entered. "
+            "Check both values and try again.",
+            code="ACTIVATION_MATRICULE_MISMATCH")
+    if (student.email or "").casefold() != (email or "").strip().casefold():
+        raise BusinessError(
+            "This activation code does not match the email address you entered. "
+            "Use the email address admissions has on record.",
+            code="ACTIVATION_EMAIL_MISMATCH")
     if student.matricule_revoked:
         raise BusinessError("This matricule has been revoked.",
                             code="MATRICULE_REVOKED")
@@ -128,31 +150,26 @@ def activate_account(raw_token: str, password: str, *, first_name="", last_name=
         raise BusinessError("This student account is already activated.",
                             code="ACCOUNT_ALREADY_ACTIVE")
 
+    # Names and phone always come from the admin-entered record.
     user = User.objects.filter(email=student.email).first()
     if user is None:
-        user = User(email=student.email, username=student.email, is_active=True)
+        user = User(email=student.email, is_active=True)
+    user.username = student.matricule
     user.set_password(password)
-    user.first_name = first_name or student.first_name
-    user.last_name = last_name or student.last_name
-    user.phone = phone or student.phone
+    user.first_name = student.first_name
+    user.last_name = student.last_name
+    user.phone = student.phone
     user.account_status = "active"
     user.save()
     UserRole.objects.get_or_create(user=user, role="student")
 
     student.user = user
     student.status = "active"
-    if first_name:
-        student.first_name = first_name
-    if last_name:
-        student.last_name = last_name
-    if phone:
-        student.phone = phone
-    student.save(update_fields=["user", "status", "first_name", "last_name",
-                                "phone", "updated_at"])
+    student.save(update_fields=["user", "status", "updated_at"])
     token.used_at = timezone.now()
     token.save(update_fields=["used_at", "updated_at"])
     audit("student.account_activated", actor=user, entity=student,
-          summary={"matricule": student.matricule})
+          summary={"matricule": student.matricule, "username": user.username})
     return student
 
 

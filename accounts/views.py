@@ -24,21 +24,22 @@ from .services import activate_account, issue_matricule, revoke_student
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def activate_view(request):
-    """POST /api/auth/activate – claim a one-time activation token."""
+    """POST /api/auth/activate – activate with matricule + email + code."""
     serializer = ActivationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
     student = activate_account(
-        data["token"],
+        data["activation_code"],
         data["password"],
-        first_name=data.get("first_name", ""),
-        last_name=data.get("last_name", ""),
-        phone=data.get("phone", ""),
+        matricule=data["matricule"],
+        email=data["email"],
     )
     return Response(
         {
-            "detail": "Account activated. You can now log in.",
+            "detail": "Account activated. Sign in with your matricule and password.",
             "matricule": student.matricule,
+            "username": student.matricule,
+            "name": student.full_name,
             "email": student.email,
             "student_id": student.id,
         },

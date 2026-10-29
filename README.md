@@ -30,9 +30,13 @@ py -3.14 -m pytest                            # acceptance tests (blueprint SS11
 | lecturer@demo.edu | lecturer |
 | student@demo.edu | student (unpaid invoice) |
 
-JWT login: `POST /api/auth/token/` with `{"email": ..., "password": ...}`
-(email is the username). The seed also prints a prospect activation token;
-activate via `POST /api/auth/activate` `{"token": ..., "password": ...}`.
+JWT login: `POST /api/auth/token/` — **students** send their matricule
+(`{"username": "UB26-...", "password": ...}` or `{"matricule": ...}`);
+**staff** send their email (`{"email": ..., "password": ...}`). Activation:
+`POST /api/auth/activate` with `{"matricule", "email", "activation_code",
+"password"}` (legacy `token` accepted as the code). Display names always
+come from the admin-created student record; a student's `username` is
+their matricule.
 
 ## 5-minute demo flow (SS12)
 

@@ -19,7 +19,10 @@ ROLE_CHOICES = [
 
 
 class User(AbstractUser):
-    """Login account. Email is the unique identifier."""
+    """Login account. ``USERNAME_FIELD`` stays ``email`` for staff accounts;
+    student accounts sign in with their matricule (their ``username`` is set
+    to the matricule at activation, and the token endpoint resolves a
+    matricule login to the student's email)."""
 
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=32, blank=True)

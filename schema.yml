@@ -4513,7 +4513,7 @@ paths:
   /api/auth/activate:
     post:
       operationId: auth_activate_create
-      description: POST /api/auth/activate – claim a one-time activation token.
+      description: POST /api/auth/activate – activate with matricule + email + code.
       tags:
       - auth
       security:
@@ -5337,7 +5337,11 @@ paths:
   /api/payments/{reference}/status:
     get:
       operationId: payments_status_retrieve
-      description: GET /api/payments/:reference/status – server-verified status.
+      description: |-
+        GET /api/payments/:reference/status – server-verified status.
+
+        ``reference`` may be the internal ``PAY-...`` id or the provider's
+        transaction id (``trx...``/``cs_...``) carried by provider return URLs.
       parameters:
       - in: path
         name: reference
@@ -7230,16 +7234,29 @@ components:
         * `amount` - Fixed amount
     RolesTokenObtainPair:
       type: object
-      description: JWT that also carries the user's roles for the frontend.
+      description: |-
+        JWT login: students sign in with their *matricule*; staff keep email.
+
+        The endpoint stays backward compatible — the login identifier may be
+        sent as ``username``, ``matricule`` or ``email``. A matricule login is
+        resolved to the student's stored email before authentication; all other
+        identifiers authenticate as emails, exactly as before. ``email`` (the
+        model's USERNAME_FIELD) is therefore optional at the serializer level:
+        ``validate`` guarantees one identifier is present before authenticating.
       properties:
         email:
+          type: string
+          writeOnly: true
+        matricule:
+          type: string
+          writeOnly: true
+        username:
           type: string
           writeOnly: true
         password:
           type: string
           writeOnly: true
       required:
-      - email
       - password
     Semester:
       type: object

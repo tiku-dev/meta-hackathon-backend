@@ -149,6 +149,10 @@ class Command(BaseCommand):
         # --- Students: one active (unpaid), one pending prospect ----------
         student_user = get_user("student@demo.edu", "student",
                                 first_name="Sam", last_name="Student")
+        if student_user.username != "UB26-CSC-0002":
+            # Students sign in with their matricule.
+            student_user.username = "UB26-CSC-0002"
+            student_user.save(update_fields=["username"])
         student, _ = StudentProfile.objects.get_or_create(
             matricule="UB26-CSC-0002",
             defaults={"user": student_user, "first_name": "Sam", "last_name": "Student",
