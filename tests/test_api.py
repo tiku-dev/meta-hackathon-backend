@@ -193,6 +193,190 @@ def test_payment_flow_idempotency_and_webhook(api, world):
 
 
 @pytest.mark.django_db
+def test_payment_status_resolves_provider_reference(api, world, monkeypatch):
+    """Regression: Notch Pay's return URL carries reference=trx... (the
+    provider id) plus trxref/notchpay_trxref=PAY-... (ours). Status checks
+    must resolve the provider reference too, credit exactly once, and park
+    a second verified payment on a settled invoice for a refund review.
+    """
+    import finance.providers.notchpay as notchpay_module
+    from finance.models import Invoice, PaymentAttempt
+    from finance.providers.base import VerifyResult
+
+    invoice = Invoice.objects.create(
+        student=world["student"], fee_schedule=world["schedule"],
+        semester=world["semester"], currency="XAF", total_due=Decimal("60000"))
+    PaymentAttempt.objects.create(
+        invoice=invoice, provider="notchpay", reference="PAY-REGRESS1",
+        provider_reference="trx.test_regress1", amount=Decimal("60000"),
+        currency="XAF", status="pending", initiated_by=world["student_user"])
+
+    # Provider-side confirmation, as GET /payments/{trx...} reports it.
+    def fake_verify(self, *, attempt):
+        return VerifyResult(
+            status="succeeded", reference=attempt.reference,
+            provider_reference=attempt.provider_reference,
+            amount=str(attempt.amount), currency=attempt.currency)
+
+    monkeypatch.setattr(
+        notchpay_module.NotchPayProvider, "verify", fake_verify)
+
+    client = auth(api, world["student_user"])
+    # The return page lands with the provider's trx id, not our PAY- id.
+    resp = client.get("/api/payments/trx.test_regress1/status")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["reference"] == "PAY-REGRESS1"
+    assert resp.data["status"] == "succeeded"
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("60000")
+    assert invoice.status == "paid"
+    assert invoice.receipts.count() == 1
+
+    # Idempotent: re-checking by either reference never double-credits.
+    resp = client.get("/api/payments/PAY-REGRESS1/status")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["status"] == "succeeded"
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("60000")
+    assert invoice.receipts.count() == 1
+
+    # A second verified payment on the settled invoice (duplicate checkout)
+    # is parked for a finance refund review instead of over-crediting.
+    PaymentAttempt.objects.create(
+        invoice=invoice, provider="notchpay", reference="PAY-REGRESS3",
+        provider_reference="trx.test_regress3", amount=Decimal("60000"),
+        currency="XAF", status="pending", initiated_by=world["student_user"])
+    resp = client.get("/api/payments/trx.test_regress3/status")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["status"] == "needs_review"
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("60000")
+    assert invoice.receipts.count() == 1
+
+    # Unknown references and other students' payments are still rejected.
+    resp = client.get("/api/payments/trx.test_unknown/status")
+    assert_error(resp, "PAYMENT_NOT_FOUND")
+    other = auth(api, world["lecturer_user"])
+    resp = other.get("/api/payments/trx.test_regress1/status")
+    assert_error(resp, "NOT_YOUR_PAYMENT")
+
+    # The sandbox simulator resolves provider references the same way.
+    invoice2 = Invoice.objects.create(
+        student=world["student"], fee_schedule=world["schedule"],
+        semester=world["semester"], currency="XAF", total_due=Decimal("60000"))
+    PaymentAttempt.objects.create(
+        invoice=invoice2, provider="mock", reference="PAY-REGRESS2",
+        provider_reference="mock_PAY-REGRESS2", amount=Decimal("60000"),
+        currency="XAF", status="pending", initiated_by=world["student_user"])
+    resp = client.post("/api/payments/mock_PAY-REGRESS2/mock-simulate",
+                       {"outcome": "succeeded"}, format="json")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["status"] == "succeeded"
+    invoice2.refresh_from_db()
+    assert invoice2.amount_paid == Decimal("60000")
+
+
+@pytest.mark.django_db
+def test_student_fees_exposes_configured_payment_options(api, world, settings):
+    """The fees page must know which payment buttons are safe to offer."""
+    settings.PAYMENT_PROVIDER = "notchpay"
+    settings.PAYMENT_ALLOW_MOCK = False
+    settings.NOTCHPAY_PUBLIC_KEY = "pk_test_dummy"
+    settings.NOTCHPAY_SANDBOX = True
+    settings.STRIPE_SECRET_KEY = "sk_test_dummy"
+    settings.STRIPE_SANDBOX = True
+
+    client = auth(api, world["student_user"])
+    resp = client.get("/api/student/fees")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["payment_options"] == {
+        "default_provider": "notchpay",
+        "providers": {
+            "mock": {"enabled": False, "sandbox": True},
+            "notchpay": {"enabled": True, "sandbox": True},
+            "stripe": {"enabled": True, "sandbox": True},
+        },
+    }
+
+
+@pytest.mark.django_db
+def test_stripe_payment_start_and_return_reference(api, world, monkeypatch):
+    """Starting Stripe returns a checkout URL/session and credits once verified."""
+    import finance.providers.stripe as stripe_module
+    from finance.models import Invoice
+    from finance.providers.base import VerifyResult
+
+    invoice = Invoice.objects.create(
+        student=world["student"], fee_schedule=world["schedule"],
+        semester=world["semester"], currency="USD", total_due=Decimal("234"))
+    captured = {}
+
+    def fake_initialize(self, *, attempt, callback_url, customer):
+        captured.update(provider_reference="cs_test_123",
+                        checkout_url="https://checkout.stripe.com/c/pay/cs_test_123",
+                        callback_url=callback_url, customer=customer)
+        from finance.providers.base import InitResult
+
+        return InitResult(provider_reference="cs_test_123",
+                          checkout_url=captured["checkout_url"])
+
+    def fake_verify(self, *, attempt):
+        return VerifyResult(
+            status="succeeded", reference=attempt.reference,
+            provider_reference=attempt.provider_reference,
+            amount=str(attempt.amount), currency=attempt.currency)
+
+    monkeypatch.setattr(stripe_module.StripeProvider, "initialize", fake_initialize)
+    monkeypatch.setattr(stripe_module.StripeProvider, "verify", fake_verify)
+
+    client = auth(api, world["student_user"])
+    resp = client.post(f"/api/invoices/{invoice.id}/payments", {
+        "amount": "234", "provider": "stripe",
+        "callback_url": "http://localhost:5173/payments/return",
+    }, format="json")
+    assert resp.status_code == 201, resp.content
+    assert resp.data["provider"] == "stripe"
+    assert resp.data["provider_reference"] == "cs_test_123"
+    assert resp.data["checkout_url"].endswith("cs_test_123")
+
+    # Stripe returns without an appended reference, so the adapter adds our
+    # PAY- reference; resolving by either that or cs_test_123 credits once.
+    resp = client.get("/api/payments/cs_test_123/status")
+    assert resp.status_code == 200, resp.content
+    assert resp.data["status"] == "succeeded"
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("234")
+    assert invoice.receipts.count() == 1
+
+    resp = client.get(f"/api/payments/{resp.data['reference']}/status")
+    assert resp.status_code == 200, resp.content
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("234")
+    assert invoice.receipts.count() == 1
+
+
+@pytest.mark.django_db
+def test_mock_simulate_rejects_real_provider_attempt(api, world):
+    """The local simulator must never mark a real-provider attempt paid."""
+    from finance.models import Invoice, PaymentAttempt
+
+    invoice = Invoice.objects.create(
+        student=world["student"], fee_schedule=world["schedule"],
+        semester=world["semester"], currency="USD", total_due=Decimal("234"))
+    PaymentAttempt.objects.create(
+        invoice=invoice, provider="stripe", reference="PAY-STRIPE-GUARD",
+        provider_reference="cs_test_guard", amount=Decimal("234"),
+        currency="USD", status="pending", initiated_by=world["student_user"])
+
+    client = auth(api, world["student_user"])
+    resp = client.post("/api/payments/cs_test_guard/mock-simulate",
+                       {"outcome": "succeeded"}, format="json")
+    assert_error(resp, "PROVIDER_DISABLED")
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == Decimal("0")
+
+
+@pytest.mark.django_db
 def test_marks_workflow_and_results_lock(api, world):
     """SS11.8/9: CA<=30, exam<=70, totals, bands, publish lock, correction."""
     from academics.services import register_courses

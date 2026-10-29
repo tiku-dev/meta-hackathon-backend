@@ -156,6 +156,10 @@ def test_stripe_zero_decimal_xaf(monkeypatch):
     assert price["unit_amount"] == 60000
     assert captured["client_reference_id"] == "PAY-TEST123"
     assert captured["metadata"]["reference"] == "PAY-TEST123"
+    assert captured["success_url"] == (
+        "http://localhost:5173/payments/return?reference=PAY-TEST123")
+    assert captured["cancel_url"] == (
+        "http://localhost:5173/payments/return?reference=PAY-TEST123")
     assert result.provider_reference == "cs_test_123"
 
     verified = provider.verify(attempt=attempt)

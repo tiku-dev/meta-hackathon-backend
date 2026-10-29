@@ -8,6 +8,7 @@ the raw body using ``STRIPE_WEBHOOK_SECRET``.
 """
 import json
 from decimal import Decimal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 
@@ -42,6 +43,22 @@ def _multiplier(currency: str) -> int:
     return 1 if currency.upper() in ZERO_DECIMAL_CURRENCIES else 100
 
 
+def _with_reference(url: str, reference: str) -> str:
+    """Add our internal reference to a Stripe return URL.
+
+    Stripe does not append the Checkout Session id to success/cancel URLs
+    unless a placeholder is configured, so the return page needs our
+    ``PAY-...`` reference to ask the backend for a server-side verification.
+    """
+    if not url:
+        return url
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.setdefault("reference", reference)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(query), parts.fragment))
+
+
 class StripeProvider(PaymentProvider):
     name = "stripe"
 
@@ -52,8 +69,8 @@ class StripeProvider(PaymentProvider):
         try:
             session = stripe.checkout.Session.create(
                 mode="payment",
-                success_url=callback_url,
-                cancel_url=callback_url,
+                success_url=_with_reference(callback_url, attempt.reference),
+                cancel_url=_with_reference(callback_url, attempt.reference),
                 client_reference_id=attempt.reference,
                 customer_email=customer.get("email") or None,
                 metadata={"reference": attempt.reference,

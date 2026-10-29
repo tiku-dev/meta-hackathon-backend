@@ -4,6 +4,7 @@ reconciliation (blueprint SS9). Internal records are the source of truth.
 import uuid
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -56,6 +57,52 @@ def ensure_invoice(student, semester, *, actor=None) -> Invoice:
     audit("invoice.created", actor=actor, entity=invoice,
           summary={"student_id": student.id, "total_due": str(schedule.amount)})
     return invoice
+
+
+def payment_options() -> dict:
+    """Payment methods the UI may offer, based on server configuration.
+
+    The browser must not guess: the local simulator is only shown when
+    ``PAYMENT_ALLOW_MOCK`` is enabled, while real providers are only shown
+    when their server-side credentials are configured.
+    """
+    default_provider = str(
+        getattr(settings, "PAYMENT_PROVIDER", "mock") or "mock").lower()
+    return {
+        "default_provider": default_provider,
+        "providers": {
+            "mock": {
+                "enabled": bool(getattr(settings, "PAYMENT_ALLOW_MOCK", False)),
+                "sandbox": True,
+            },
+            "notchpay": {
+                "enabled": bool(getattr(settings, "NOTCHPAY_PUBLIC_KEY", "")),
+                "sandbox": bool(getattr(settings, "NOTCHPAY_SANDBOX", False)),
+            },
+            "stripe": {
+                "enabled": bool(getattr(settings, "STRIPE_SECRET_KEY", "")),
+                "sandbox": bool(getattr(settings, "STRIPE_SANDBOX", False)),
+            },
+        },
+    }
+
+
+def find_attempt(reference: str) -> PaymentAttempt | None:
+    """Resolve an attempt by internal *or* provider reference.
+
+    Provider return URLs carry the provider's own transaction id
+    (``reference=trx...`` for Notch Pay, ``cs_...`` for Stripe), while our
+    API, webhooks and UI use the internal ``PAY-...`` reference. Accepting
+    both keeps status checks working no matter which id the caller holds;
+    ownership is still enforced by the caller afterwards.
+    """
+    if not reference:
+        return None
+    attempt = PaymentAttempt.objects.filter(reference=reference).first()
+    if attempt is None:
+        attempt = PaymentAttempt.objects.filter(
+            provider_reference=reference).first()
+    return attempt
 
 
 def payment_threshold_met(student, semester):
@@ -149,6 +196,20 @@ def reconcile_attempt(attempt: PaymentAttempt, *, verified_status: str,
 
     if verified_status == "succeeded":
         invoice = Invoice.objects.select_for_update().get(pk=attempt.invoice_id)
+        if invoice.status in ("paid", "waived", "cancelled") \
+                or attempt.amount > invoice.balance:
+            # A second *verified* payment against an invoice that is
+            # already settled (e.g. the student completed two checkouts)
+            # must never over-credit it: park for a finance refund review.
+            attempt.status = "needs_review"
+            attempt.failure_reason = (
+                "Verified payment exceeds the invoice balance "
+                "(possible duplicate payment).")
+            attempt.save(update_fields=["status", "failure_reason", "updated_at"])
+            audit("payment.needs_review", entity=attempt,
+                  summary={"problems": ["exceeds remaining invoice balance"],
+                           "invoice_id": invoice.id, "source": source})
+            return attempt
         invoice.amount_paid += attempt.amount
         invoice.refresh_status()
         invoice.save(update_fields=["amount_paid", "status", "updated_at"])
@@ -193,8 +254,7 @@ def handle_webhook(provider_name: str, parsed: dict) -> PaymentEvent:
         event.outcome = "duplicate ignored"
         event.save(update_fields=["outcome", "updated_at"])
         return event
-    attempt = PaymentAttempt.objects.filter(
-        reference=parsed.get("reference", "")).first()
+    attempt = find_attempt(parsed.get("reference", ""))
     if attempt is None and parsed.get("provider_reference"):
         attempt = PaymentAttempt.objects.filter(
             provider_reference=parsed["provider_reference"]).first()

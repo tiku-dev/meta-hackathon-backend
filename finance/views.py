@@ -20,8 +20,8 @@ from .serializers import (
     ReceiptSerializer,
 )
 from .services import (
-    approve_offline_adjustment, ensure_invoice, handle_webhook,
-    reconcile_attempt, start_payment,
+    approve_offline_adjustment, ensure_invoice, find_attempt, handle_webhook,
+    payment_options, reconcile_attempt, start_payment,
 )
 
 
@@ -130,6 +130,7 @@ class StudentFeesView(APIView):
             "registration_deadline": semester.registration_deadline if semester else None,
             "fee_deadline": semester.fee_deadline if semester else None,
             "eligibility": eligibility,
+            "payment_options": payment_options(),
         })
 
 
@@ -160,12 +161,16 @@ class InvoicePaymentCreateView(APIView):
 
 
 class PaymentStatusView(APIView):
-    """GET /api/payments/:reference/status – server-verified status."""
+    """GET /api/payments/:reference/status – server-verified status.
+
+    ``reference`` may be the internal ``PAY-...`` id or the provider's
+    transaction id (``trx...``/``cs_...``) carried by provider return URLs.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, reference):
-        attempt = PaymentAttempt.objects.filter(reference=reference).first()
+        attempt = find_attempt(reference)
         if attempt is None:
             raise BusinessError("Payment reference not found.",
                                 code="PAYMENT_NOT_FOUND")
@@ -198,10 +203,14 @@ class MockSimulateView(APIView):
         if not getattr(settings, "PAYMENT_ALLOW_MOCK", False):
             raise BusinessError("Sandbox simulation is disabled.",
                                 code="PROVIDER_DISABLED")
-        attempt = PaymentAttempt.objects.filter(reference=reference).first()
+        attempt = find_attempt(reference)
         if attempt is None:
             raise BusinessError("Payment reference not found.",
                                 code="PAYMENT_NOT_FOUND")
+        if attempt.provider != "mock":
+            raise BusinessError(
+                "Sandbox simulation only applies to local mock payments.",
+                code="PROVIDER_DISABLED")
         outcome = request.data.get("outcome", "succeeded")
         attempt.status = outcome  # what the 'provider' will report on verify
         attempt.save(update_fields=["status", "updated_at"])
