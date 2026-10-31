@@ -1,14 +1,16 @@
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from academics.models import CourseOffering, CourseRegistration
+from academics.models import CourseOffering, CourseRegistration, Semester
 from core.audit import audit
 from core.exceptions import BusinessError
-from core.permissions import IsAcademicsAdmin, IsRegistrar, has_role
+from core.permissions import IsAcademicsAdmin, IsHOD, IsRegistrar, has_role
 
 from .models import (
     AssessmentResult, GradeBand, GradingPolicy, TranscriptRequest,
@@ -119,8 +121,15 @@ class LecturerMarksView(APIView):
     def put(self, request, offering_id):
         offering = _get_offering(offering_id)
         profile = _lecturer_profile(request.user)
+        # The assigned lecturer — or the HOD in charge of the department
+        # the course belongs to (the HOD owns departmental marks).
+        is_department_hod = (
+            profile is not None and profile.is_hod
+            and offering.course.department_id is not None
+            and offering.course.department_id == profile.department_id)
         if not (has_role(request.user, "admin")
-                or (profile and offering.lecturer_id == profile.id)):
+                or (profile and offering.lecturer_id == profile.id)
+                or (is_department_hod and has_role(request.user, "hod"))):
             raise BusinessError("You do not teach this offering.",
                                 code="NOT_YOUR_OFFERING")
         serializer = BulkMarksSerializer(data=request.data)
@@ -185,6 +194,91 @@ class LecturerMarksView(APIView):
             "saved": AssessmentResultSerializer(saved, many=True).data,
             "errors": errors,
         })
+
+
+def _hod_upload_department_id(user):
+    """Department an HOD marks uploader is scoped to.
+
+    Returns the HOD's own department id, or ``None`` for an unscoped
+    super admin. Raises for anyone else (lecturer, registrar-only, or an
+    HOD role without a headed department).
+    """
+    if has_role(user, "super_admin"):
+        return None
+    department_id = _hod_department_id(user)
+    if department_id is not None:
+        return department_id
+    if has_role(user, "admin"):
+        return None
+    raise BusinessError(
+        "Only a Head of Department can upload marks. Your account is not "
+        "linked to a department as its HOD.",
+        code="NOT_DEPARTMENT_HOD", http_status=status.HTTP_403_FORBIDDEN)
+
+
+class HodMarksUploadTemplateView(APIView):
+    """GET /api/hod/marks-upload/template – downloadable CSV template."""
+
+    permission_classes = [IsHOD]
+
+    def get(self, request):
+        from .hod_marks import CSV_TEMPLATE
+
+        response = HttpResponse(CSV_TEMPLATE, content_type="text/csv")
+        response["Content-Disposition"] = (
+            'attachment; filename="hod-marks-template.csv"')
+        return response
+
+
+class HodMarksUploadView(APIView):
+    """POST /api/hod/marks-upload – HOD uploads CA/exam marks by CSV.
+
+    Form fields: ``file`` (the CSV), ``academic_year`` (id),
+    ``semester`` (id, must belong to that year) and optional
+    ``dry_run`` ("1"/"true" to validate + preview without saving).
+
+    Marks are routed to each student by matricule and published straight
+    to them; students whose fees have not cleared are held back (not
+    saved) and reported in ``held_fees``.
+    """
+
+    permission_classes = [IsHOD]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from .hod_marks import import_hod_marks_csv
+
+        department_id = _hod_upload_department_id(request.user)
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise BusinessError("A CSV file is required (field name: file).",
+                                code="CSV_REQUIRED")
+        year_id = request.data.get("academic_year")
+        semester_id = request.data.get("semester")
+        if not year_id or not semester_id:
+            raise BusinessError(
+                "academic_year and semester are required: choose the "
+                "academic year and semester these marks belong to.",
+                code="SEMESTER_REQUIRED")
+        semester = (
+            Semester.objects.filter(id=semester_id, academic_year_id=year_id)
+            .select_related("academic_year").first())
+        if semester is None:
+            raise BusinessError(
+                "That semester does not belong to the selected academic "
+                "year.", code="SEMESTER_NOT_IN_YEAR")
+        try:
+            csv_text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise BusinessError(
+                "The file could not be read as text. Upload a UTF-8 CSV "
+                "file.", code="CSV_UNREADABLE")
+        dry_run = str(request.data.get("dry_run", "")).lower() in (
+            "1", "true", "yes")
+        report = import_hod_marks_csv(
+            request.user, semester=semester, department_id=department_id,
+            csv_text=csv_text, dry_run=dry_run)
+        return Response(report)
 
 
 class HodApproveResultsView(APIView):

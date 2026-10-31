@@ -3,9 +3,10 @@ from core.routers import OptionalSlashRouter as DefaultRouter
 
 from .views import (
     GradeBandViewSet, GradingPolicyViewSet, HodApproveResultsView,
-    LecturerMarksView, LockResultsView, OfferingResultsView,
-    PublishResultsView, ResultCorrectionView, StudentResultsView,
-    StudentTranscriptView, TranscriptViewSet,
+    HodMarksUploadTemplateView, HodMarksUploadView, LecturerMarksView,
+    LockResultsView, OfferingResultsView, PublishResultsView,
+    ResultCorrectionView, StudentResultsView, StudentTranscriptView,
+    TranscriptViewSet,
 )
 
 router = DefaultRouter(trailing_slash="/?")
@@ -18,6 +19,10 @@ urlpatterns = [
          name="lecturer-results"),
     path("hod/offerings/<int:offering_id>/approve-results",
          HodApproveResultsView.as_view(), name="hod-approve-results"),
+    path("hod/marks-upload/template", HodMarksUploadTemplateView.as_view(),
+         name="hod-marks-upload-template"),
+    path("hod/marks-upload", HodMarksUploadView.as_view(),
+         name="hod-marks-upload"),
     path("admin/offerings/<int:offering_id>/publish-results",
          PublishResultsView.as_view(), name="publish-results"),
     path("admin/offerings/<int:offering_id>/lock-results",
