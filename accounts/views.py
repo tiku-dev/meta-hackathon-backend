@@ -5,11 +5,17 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
+from academics.models import AcademicUnit
 from core.audit import audit
 from core.exceptions import BusinessError
 from core.permissions import IsAdmin, IsAdmissions, has_role
 
+from .hod_admin import (
+    assign_hod, create_hod, department_hod, profile_summary, remove_hod,
+    role_is_active, sync_hod_after_lecturer_save,
+)
 from .models import LecturerProfile, StudentProfile, User
 from .serializers import (
     ActivationSerializer,
@@ -153,6 +159,18 @@ class LecturerAdminViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         profile = serializer.save()
         audit("lecturer.created", actor=self.request.user, entity=profile)
+        sync_hod_after_lecturer_save(
+            self.request.user, profile,
+            was_hod=False, old_department_id=None)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        was_hod = bool(instance.is_hod)
+        old_department_id = instance.department_id
+        profile = serializer.save()
+        sync_hod_after_lecturer_save(
+            self.request.user, profile,
+            was_hod=was_hod, old_department_id=old_department_id)
 
     @action(detail=True, methods=["post"], url_path="assign-user")
     def assign_user(self, request, pk=None):
@@ -166,14 +184,141 @@ class LecturerAdminViewSet(viewsets.ModelViewSet):
         profile.user = user
         profile.save(update_fields=["user", "updated_at"])
         UserRole.objects.get_or_create(user=user, role="lecturer")
-        if profile.is_hod:
-            UserRole.objects.get_or_create(
-                user=user, role="hod",
-                defaults={"unit_scope": profile.department},
+        if profile.is_hod and profile.department_id:
+            UserRole.objects.update_or_create(
+                user=user, role="hod", unit_scope_id=profile.department_id,
+                defaults={"is_active": True},
             )
         audit("lecturer.user_assigned", actor=request.user, entity=profile,
               summary={"user_id": user.id})
         return Response(LecturerProfileSerializer(profile).data)
+
+    @action(detail=True, methods=["post"], url_path="remove-hod")
+    def remove_hod_action(self, request, pk=None):
+        """POST /api/admin/lecturers/:id/remove-hod – remove a headship."""
+        profile = self.get_object()
+        report = remove_hod(
+            request.user, lecturer=profile,
+            reason=request.data.get("reason", ""))
+        return Response(report)
+
+
+def _get_department(department_id):
+    department = AcademicUnit.objects.filter(
+        id=department_id, unit_type="department").first()
+    if department is None:
+        raise BusinessError("Department not found.", code="DEPARTMENT_NOT_FOUND")
+    return department
+
+
+def _department_row(department):
+    hod = department_hod(department.id)
+    return {
+        "department_id": department.id,
+        "department": department.name,
+        "parent_id": department.parent_id,
+        "parent_name": department.parent.name if department.parent_id else None,
+        "is_active": department.is_active,
+        "hod": profile_summary(hod) if hod else None,
+        "has_hod": hod is not None,
+        "hod_role_active": role_is_active(hod.user, "hod") if hod else False,
+    }
+
+
+class HodDepartmentsView(APIView):
+    """GET /api/admin/hods/departments – every department + its HOD.
+
+    The Admin → Heads of Department page is department-first (like the
+    Students page is student-first): each row shows the current head or
+    "No HOD", with assign/change/remove actions.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        departments = AcademicUnit.objects.filter(
+            unit_type="department").select_related("parent").order_by("name")
+        rows = [_department_row(d) for d in departments]
+        return Response({
+            "departments": rows,
+            "summary": {
+                "departments": len(rows),
+                "with_hod": sum(1 for r in rows if r["has_hod"]),
+                "without_hod": sum(1 for r in rows if not r["has_hod"]),
+            },
+        })
+
+
+class HodDepartmentDetailView(APIView):
+    """POST/DELETE /api/admin/hods/departments/:id – assign / remove HOD."""
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request, department_id):
+        """Assign (or change) the department's HOD. Body: {lecturer_id}."""
+        department = _get_department(department_id)
+        lecturer = LecturerProfile.objects.filter(
+            id=request.data.get("lecturer_id")).first()
+        if lecturer is None:
+            raise BusinessError("lecturer_id does not match a lecturer.",
+                                code="LECTURER_NOT_FOUND")
+        report = assign_hod(
+            request.user, department=department, lecturer=lecturer,
+            reason=request.data.get("reason", ""))
+        return Response({**report, **_department_row(department)})
+
+    def delete(self, request, department_id):
+        """Remove the department's current HOD (headship only)."""
+        department = _get_department(department_id)
+        report = remove_hod(
+            request.user, department=department,
+            reason=request.data.get("reason", ""))
+        return Response({**report, **_department_row(department)})
+
+
+class HodCreateView(APIView):
+    """POST /api/admin/hods – create a brand-new HOD ("Add new HOD").
+
+    Body: ``{department_id, first_name, last_name, email?, phone?,
+    lecturer_code?, reason?}``. Creates the lecturer profile and assigns
+    them as that department's single head in one step (replacing any
+    previous head); the login account is linked afterwards from the page.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        department_id = request.data.get("department_id")
+        if not department_id:
+            raise BusinessError(
+                "Choose the department the new HOD will head.",
+                code="DEPARTMENT_REQUIRED")
+        department = _get_department(department_id)
+        report = create_hod(
+            request.user, department=department, data=request.data,
+            reason=request.data.get("reason", ""))
+        return Response(
+            {**report, **_department_row(department)},
+            status=status.HTTP_201_CREATED)
+
+
+class HodListView(APIView):
+    """GET /api/admin/hods – current heads only (HODs view of the page)."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        heads = (
+            LecturerProfile.objects.filter(is_hod=True)
+            .select_related("department", "user")
+            .order_by("department__name", "last_name"))
+        rows = [{
+            **profile_summary(p),
+            "department_id": p.department_id,
+            "department": p.department.name if p.department_id else None,
+            "hod_role_active": role_is_active(p.user, "hod"),
+        } for p in heads]
+        return Response({"hods": rows, "count": len(rows)})
 
 
 class MeViewSet(viewsets.ViewSet):

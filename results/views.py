@@ -267,6 +267,23 @@ class HodMarksUploadView(APIView):
             raise BusinessError(
                 "That semester does not belong to the selected academic "
                 "year.", code="SEMESTER_NOT_IN_YEAR")
+        offering = None
+        offering_id = request.data.get("offering")
+        if offering_id:
+            offering = CourseOffering.objects.filter(
+                id=offering_id, semester=semester).select_related(
+                "course").first()
+            if offering is None:
+                raise BusinessError(
+                    "That course is not running in the selected semester. "
+                    "Choose one of your department's courses for this "
+                    "semester first.", code="OFFERING_NOT_FOUND")
+            if (department_id is not None
+                    and offering.course.department_id != department_id):
+                raise BusinessError(
+                    "This course belongs to another department — only its "
+                    "HOD can upload its marks.", code="OUT_OF_DEPARTMENT",
+                    http_status=status.HTTP_403_FORBIDDEN)
         try:
             csv_text = upload.read().decode("utf-8-sig")
         except UnicodeDecodeError:
@@ -277,7 +294,127 @@ class HodMarksUploadView(APIView):
             "1", "true", "yes")
         report = import_hod_marks_csv(
             request.user, semester=semester, department_id=department_id,
-            csv_text=csv_text, dry_run=dry_run)
+            csv_text=csv_text, dry_run=dry_run, offering=offering)
+        return Response(report)
+
+
+def _resolve_hod_semester(request):
+    """(semester, department_id) for the HOD single-form endpoints."""
+    department_id = _hod_upload_department_id(request.user)
+    year_id = request.query_params.get("academic_year") or request.data.get(
+        "academic_year")
+    semester_id = request.query_params.get("semester") or request.data.get(
+        "semester")
+    if not year_id or not semester_id:
+        raise BusinessError(
+            "academic_year and semester are required: choose the academic "
+            "year and semester these marks belong to.",
+            code="SEMESTER_REQUIRED")
+    semester = (
+        Semester.objects.filter(id=semester_id, academic_year_id=year_id)
+        .select_related("academic_year").first())
+    if semester is None:
+        raise BusinessError(
+            "That semester does not belong to the selected academic year.",
+            code="SEMESTER_NOT_IN_YEAR")
+    return semester, department_id
+
+
+class HodMarksOfferingsView(APIView):
+    """GET /api/hod/marks-form/offerings?academic_year=&semester=
+
+    All department courses running in the semester — the list the HOD
+    chooses from before publishing marks (form or CSV), each with its
+    lecturer, registered-student count and marks progress.
+    """
+
+    permission_classes = [IsHOD]
+
+    def get(self, request):
+        from .hod_marks import hod_offering_row, hod_offerings
+
+        semester, department_id = _resolve_hod_semester(request)
+        offerings = hod_offerings(semester, department_id)
+        rows = [hod_offering_row(o) for o in offerings]
+        return Response({
+            "semester_id": semester.id,
+            "semester_label": str(semester),
+            "academic_year_id": semester.academic_year_id,
+            "academic_year_label": str(semester.academic_year),
+            "department_id": department_id,
+            "summary": {
+                "courses": len(rows),
+                "published": sum(
+                    1 for r in rows if r["marks_status"] == "published"),
+                "in_progress": sum(
+                    1 for r in rows if r["marks_status"] == "in_progress"),
+                "not_started": sum(
+                    1 for r in rows if r["marks_status"] == "not_started"),
+            },
+            "offerings": rows,
+        })
+
+
+class HodMarksRosterView(APIView):
+    """GET /api/hod/marks-form/roster?academic_year=&semester=&offering=
+
+    One form for the whole class: name, matricule, CA, exam. Students who
+    have cleared fees are editable first; students who have not paid are
+    at the bottom with ``can_enter_marks`` False (shown locked, no action).
+    """
+
+    permission_classes = [IsHOD]
+
+    def get(self, request):
+        from .hod_marks import hod_marks_roster
+
+        semester, department_id = _resolve_hod_semester(request)
+        offering_id = request.query_params.get("offering")
+        if not offering_id:
+            raise BusinessError("offering is required.",
+                                code="OFFERING_REQUIRED")
+        offering = CourseOffering.objects.filter(
+            id=offering_id, semester=semester).select_related(
+            "course", "semester__academic_year").first()
+        if offering is None:
+            raise BusinessError(
+                "That offering is not running in the selected semester.",
+                code="OFFERING_NOT_FOUND")
+        return Response(hod_marks_roster(semester, department_id, offering))
+
+
+class HodMarksFormSaveView(APIView):
+    """POST /api/hod/marks-form/save – save + publish typed form marks.
+
+    Body: ``{academic_year, semester, offering, marks: [{registration_id,
+    ca_mark, exam_mark}]}``. Fee-unpaid students are refused server-side
+    even if submitted, so no action can be taken on them.
+    """
+
+    permission_classes = [IsHOD]
+
+    def post(self, request):
+        from .hod_marks import save_hod_marks_form
+
+        semester, department_id = _resolve_hod_semester(request)
+        offering_id = request.data.get("offering")
+        if not offering_id:
+            raise BusinessError("offering is required.",
+                                code="OFFERING_REQUIRED")
+        offering = CourseOffering.objects.filter(
+            id=offering_id, semester=semester).select_related(
+            "course", "semester__academic_year").first()
+        if offering is None:
+            raise BusinessError(
+                "That offering is not running in the selected semester.",
+                code="OFFERING_NOT_FOUND")
+        marks = request.data.get("marks")
+        if not isinstance(marks, list):
+            raise BusinessError("marks must be a list of entries.",
+                                code="MARKS_REQUIRED")
+        report = save_hod_marks_form(
+            request.user, semester=semester, department_id=department_id,
+            offering=offering, marks=marks)
         return Response(report)
 
 

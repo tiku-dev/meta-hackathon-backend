@@ -3,6 +3,7 @@ from core.routers import OptionalSlashRouter as DefaultRouter
 
 from .views import (
     GradeBandViewSet, GradingPolicyViewSet, HodApproveResultsView,
+    HodMarksFormSaveView, HodMarksOfferingsView, HodMarksRosterView,
     HodMarksUploadTemplateView, HodMarksUploadView, LecturerMarksView,
     LockResultsView, OfferingResultsView, PublishResultsView,
     ResultCorrectionView, StudentResultsView, StudentTranscriptView,
@@ -23,6 +24,12 @@ urlpatterns = [
          name="hod-marks-upload-template"),
     path("hod/marks-upload", HodMarksUploadView.as_view(),
          name="hod-marks-upload"),
+    path("hod/marks-form/offerings", HodMarksOfferingsView.as_view(),
+         name="hod-marks-form-offerings"),
+    path("hod/marks-form/roster", HodMarksRosterView.as_view(),
+         name="hod-marks-form-roster"),
+    path("hod/marks-form/save", HodMarksFormSaveView.as_view(),
+         name="hod-marks-form-save"),
     path("admin/offerings/<int:offering_id>/publish-results",
          PublishResultsView.as_view(), name="publish-results"),
     path("admin/offerings/<int:offering_id>/lock-results",
