@@ -46,6 +46,7 @@ class Notification(TimeStampedModel):
         ("payment", "Payment"), ("registration", "Registration"),
         ("result", "Result"), ("deadline", "Deadline"),
         ("announcement", "Announcement"), ("system", "System"),
+        ("emergency", "Emergency contact"),
     ]
 
     user = models.ForeignKey(
@@ -63,6 +64,79 @@ class Notification(TimeStampedModel):
 
     def __str__(self):
         return f"{self.user} {self.title}"
+
+
+class EmergencyContact(TimeStampedModel):
+    """Urgent student → administration contact (student safety/help desk).
+
+    Separate from generic notifications so cases can be triaged by
+    priority, assigned, replied to and marked resolved without losing the
+    audit trail. ``student_read_at``/``admin_read_at`` are per-side read
+    markers; ``first_response_at`` records how quickly the first admin
+    reply was sent.
+    """
+
+    CATEGORY_CHOICES = [
+        ("medical", "Medical emergency"),
+        ("security", "Security / safety"),
+        ("welfare", "Personal welfare / distress"),
+        ("financial", "Financial hardship"),
+        ("technical", "Account / portal access"),
+        ("other", "Other urgent matter"),
+    ]
+    PRIORITY_CHOICES = [
+        ("urgent", "Urgent"), ("high", "High"), ("normal", "Normal"),
+    ]
+    STATUS_CHOICES = [
+        ("open", "Open"), ("in_progress", "In progress"),
+        ("resolved", "Resolved"), ("closed", "Closed"),
+    ]
+
+    student = models.ForeignKey(
+        "accounts.StudentProfile", on_delete=models.CASCADE,
+        related_name="emergency_contacts")
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES,
+                                default="other", db_index=True)
+    priority = models.CharField(max_length=12, choices=PRIORITY_CHOICES,
+                                default="normal", db_index=True)
+    subject = models.CharField(max_length=200)
+    message = models.TextField()
+    # Snapshot the student's contacts at send time so admins can reach
+    # them even if the profile changes afterwards.
+    contact_phone = models.CharField(max_length=32, blank=True)
+    contact_email = models.EmailField(blank=True)
+    location = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES,
+                              default="open", db_index=True)
+    admin_reply = models.TextField(blank=True)
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="assigned_emergency_contacts")
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="resolved_emergency_contacts")
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    first_response_at = models.DateTimeField(null=True, blank=True)
+    student_read_at = models.DateTimeField(null=True, blank=True)
+    admin_read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["priority", "status", "created_at"]),
+            models.Index(fields=["student", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"EmergencyContact #{self.pk} {self.subject} ({self.status})"
+
+    @property
+    def student_name(self) -> str:
+        return self.student.full_name if self.student_id else ""
+
+    @property
+    def student_matricule(self) -> str:
+        return self.student.matricule or "" if self.student_id else ""
 
 
 class Event(TimeStampedModel):

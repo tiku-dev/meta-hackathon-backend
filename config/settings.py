@@ -193,3 +193,26 @@ EMAIL_BACKEND = os.environ.get(
     "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
 )
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "no-reply@example.edu")
+
+# --- Emergency contacts (student → administration) ---------------------------
+# Published on the student "Contact administration" page. Leave blank to
+# hide an entry — never invent numbers. Admins always receive urgent cases
+# in-app (notification bell); email below is only an extra best-effort
+# copy when SMTP is configured.
+UNIVERSITY_NAME = os.environ.get("UNIVERSITY_NAME", "")
+EMERGENCY_CONTACT_EMAIL = os.environ.get("EMERGENCY_CONTACT_EMAIL", "")
+EMERGENCY_ALERT_EMAIL = os.environ.get("EMERGENCY_ALERT_EMAIL", "")
+EMERGENCY_CONTACTS = {
+    "security_name": os.environ.get(
+        "EMERGENCY_CONTACT_SECURITY_NAME", "Campus Security (24/7)"),
+    "security_phone": os.environ.get("EMERGENCY_CONTACT_SECURITY_PHONE", ""),
+    "medical_name": os.environ.get(
+        "EMERGENCY_CONTACT_MEDICAL_NAME", "Campus Medical Centre"),
+    "medical_phone": os.environ.get("EMERGENCY_CONTACT_MEDICAL_PHONE", ""),
+    "welfare_name": os.environ.get(
+        "EMERGENCY_CONTACT_WELFARE_NAME", "Student Welfare & Counselling"),
+    "welfare_phone": os.environ.get("EMERGENCY_CONTACT_WELFARE_PHONE", ""),
+    "admin_name": os.environ.get(
+        "EMERGENCY_CONTACT_ADMIN_NAME", "Administration / Student Affairs"),
+    "admin_phone": os.environ.get("EMERGENCY_CONTACT_ADMIN_PHONE", ""),
+}

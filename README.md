@@ -81,6 +81,17 @@ Payments: `POST /api/invoices/{id}/payments`, `GET /api/payments/{ref}/status`,
 Lecturer/HOD: `PUT /api/lecturer/offerings/{id}/results`,
 `POST /api/lecturer/offerings/{id}/attendance`,
 `POST /api/hod/offerings/{id}/approve-results`, `/api/hod/department/overview`
+Emergency contact: `GET /api/student/emergency-directory`,
+`GET|POST /api/student/emergency-contacts`,
+`POST /api/student/emergency-contacts/{id}/read`,
+`GET /api/admin/emergency-contacts/summary`,
+`GET|PATCH /api/admin/emergency-contacts` (+ `/{id}/mark-read/`).
+Students send urgent cases (category + priority) to administration;
+every admin/super-admin gets an in-app `emergency` notification (and a
+best-effort email for urgent/high when SMTP is set). Admins triage in
+the inbox — reply (notifies the student), assign, resolve/close.
+Published phone/email directory comes from `EMERGENCY_CONTACT_*` env
+vars (see `.env.example`); blank entries are hidden.
 
 Business-rule failures return
 `{"error": {"code": "PAYMENT_THRESHOLD_NOT_MET", "message": ..., "status": 400, "details": ...}}`
