@@ -106,6 +106,15 @@ class Command(BaseCommand):
                       "registration_threshold_value": Decimal("100"),
                       "is_active": True})
 
+        # --- One-time registration fee (NEW students, paid once) ----------
+        # Admin-assigned amount; students admitted before this row exists
+        # are grandfathered and never charged.
+        FeeSchedule.objects.get_or_create(
+            fee_type="registration_fee",
+            defaults={"currency": "XAF",
+                      "amount": Decimal(settings.DEFAULT_REGISTRATION_FEE_XAF),
+                      "is_active": True})
+
         # --- Grading policy (sample bands = demo data, not policy) --------
         policy, _ = GradingPolicy.objects.get_or_create(
             name="Demo grading policy 2026/2027", academic_year=year,
@@ -146,6 +155,54 @@ class Command(BaseCommand):
                 start_time="08:00", end_time="10:00",
                 defaults={"room": f"Room {101 + i}", "campus": "Main Campus"})
 
+        # --- Every other department gets its own courses too --------------
+        # Cross-department electives: any student may take these published
+        # offerings; all credits count toward the one credit cap.
+        extra_departments = [
+            ("Mathematics", "BSc Mathematics", [
+                ("MTH211", "Algebra II", 4, 0, "10:00", "12:00"),
+                ("MTH213", "Calculus III", 4, 1, "10:00", "12:00"),
+                ("MTH215", "Linear Algebra", 3, 2, "10:00", "12:00"),
+                ("STA201", "Probability & Statistics", 3, 3, "10:00", "12:00"),
+            ]),
+            ("Physics", "BSc Physics", [
+                ("PHY211", "Classical Mechanics", 4, 0, "13:00", "15:00"),
+                ("PHY213", "Electromagnetism", 4, 2, "13:00", "15:00"),
+                ("PHY215", "Thermodynamics", 3, 4, "10:00", "12:00"),
+            ]),
+        ]
+        for dept_name, program_name, dept_courses in extra_departments:
+            x_dept, _ = AcademicUnit.objects.get_or_create(
+                name=dept_name,
+                defaults={"unit_type": "department", "parent": faculty})
+            x_program, _ = Program.objects.get_or_create(
+                name=program_name, department=x_dept,
+                defaults={"award": "BSc", "duration_years": 3})
+            x_levels = {}
+            for order in (1, 2, 3):
+                x_levels[order], _ = Level.objects.get_or_create(
+                    program=x_program, order=order,
+                    defaults={"label": f"Level {order}",
+                              "default_max_credits": settings.DEFAULT_MAX_CREDITS})
+            for code, title, credits, weekday, start, end in dept_courses:
+                course, _ = Course.objects.get_or_create(
+                    code=code,
+                    defaults={"title": title, "credits": credits,
+                              "department": x_dept})
+                ProgramCourse.objects.get_or_create(
+                    program=x_program, level=x_levels[2], course=course,
+                    defaults={"semester_type": "first", "is_required": True})
+                offering, _ = CourseOffering.objects.get_or_create(
+                    course=course, semester=sem1, program=x_program,
+                    level=x_levels[2],
+                    defaults={"lecturer": lecturer, "capacity": 60,
+                              "status": "published"})
+                TimetableSession.objects.get_or_create(
+                    offering=offering, weekday=weekday,
+                    start_time=start, end_time=end,
+                    defaults={"room": f"{dept_name[:3]} Lab",
+                              "campus": "Main Campus"})
+
         # --- Students: one active (unpaid), one pending prospect ----------
         student_user = get_user("student@demo.edu", "student",
                                 first_name="Sam", last_name="Student")
@@ -162,6 +219,16 @@ class Command(BaseCommand):
             student=student, fee_schedule=schedule, semester=sem1,
             defaults={"currency": "XAF", "total_due": schedule.amount,
                       "due_date": sem1.fee_deadline})
+
+        # The demo student predates the one-time registration fee: mark the
+        # fee not-required so the 5-minute demo flow is never blocked.
+        from finance.models import RegistrationFeeRecord
+
+        RegistrationFeeRecord.objects.get_or_create(
+            student=student,
+            defaults={"required": False, "is_new_student": False,
+                      "amount": Decimal("0"), "currency": "XAF",
+                      "status": "not_required"})
         prospect, created = StudentProfile.objects.get_or_create(
             email="prospect@demo.edu",
             defaults={"first_name": "Pat", "last_name": "Prospect",

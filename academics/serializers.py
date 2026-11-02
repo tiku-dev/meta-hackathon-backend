@@ -8,10 +8,15 @@ from .models import (
 
 
 class AcademicUnitSerializer(serializers.ModelSerializer):
+    course_count = serializers.SerializerMethodField()
+
     class Meta:
         model = AcademicUnit
         fields = ["id", "name", "unit_type", "parent", "code", "is_active",
-                  "created_at", "updated_at"]
+                  "course_count", "created_at", "updated_at"]
+
+    def get_course_count(self, obj):
+        return obj.courses.count()
 
 
 class ProgramSerializer(serializers.ModelSerializer):
@@ -49,10 +54,15 @@ class SemesterSerializer(serializers.ModelSerializer):
 
 
 class CourseSerializer(serializers.ModelSerializer):
+    department_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Course
         fields = ["id", "code", "title", "description", "credits", "department",
-                  "is_active", "created_at", "updated_at"]
+                  "department_name", "is_active", "created_at", "updated_at"]
+
+    def get_department_name(self, obj):
+        return obj.department.name if obj.department_id else None
 
 
 class ProgramCourseSerializer(serializers.ModelSerializer):
@@ -70,6 +80,8 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
     course_code = serializers.CharField(source="course.code", read_only=True)
     course_title = serializers.CharField(source="course.title", read_only=True)
     credits = serializers.IntegerField(source="course.credits", read_only=True)
+    department_id = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
     lecturer_name = serializers.SerializerMethodField()
     semester_label = serializers.SerializerMethodField()
     enrolled_count = serializers.SerializerMethodField()
@@ -77,9 +89,18 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseOffering
         fields = ["id", "course", "course_code", "course_title", "credits",
+                  "department_id", "department_name",
                   "program", "level", "semester", "semester_label", "lecturer",
                   "lecturer_name", "capacity", "enrolled_count", "status",
                   "created_at", "updated_at"]
+
+    def get_department_id(self, obj):
+        return obj.course.department_id if obj.course_id else None
+
+    def get_department_name(self, obj):
+        if obj.course_id and obj.course.department_id:
+            return obj.course.department.name
+        return None
 
     def get_lecturer_name(self, obj):
         return obj.lecturer.full_name if obj.lecturer_id else None
@@ -112,16 +133,27 @@ class CourseRegistrationSerializer(serializers.ModelSerializer):
     course_code = serializers.CharField(source="offering.course.code", read_only=True)
     course_title = serializers.CharField(source="offering.course.title", read_only=True)
     credits = serializers.IntegerField(source="offering.course.credits", read_only=True)
+    department_id = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
     student_matricule = serializers.CharField(source="student.matricule", read_only=True)
     student_name = serializers.CharField(source="student.full_name", read_only=True)
 
     class Meta:
         model = CourseRegistration
         fields = ["id", "student", "student_matricule", "student_name", "offering",
-                  "course_code", "course_title", "credits", "semester", "status",
+                  "course_code", "course_title", "credits", "department_id",
+                  "department_name", "semester", "status",
                   "registered_at", "admin_exception", "created_at", "updated_at"]
-        read_only_fields = ["id", "student", "semester", "registered_at",
-                            "admin_exception", "created_at", "updated_at"]
+
+    def get_department_id(self, obj):
+        course = obj.offering.course if obj.offering_id else None
+        return course.department_id if course else None
+
+    def get_department_name(self, obj):
+        course = obj.offering.course if obj.offering_id else None
+        if course and course.department_id:
+            return course.department.name
+        return None
 
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):

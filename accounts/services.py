@@ -166,6 +166,35 @@ def activate_account(activation_code: str, password: str, *, matricule: str,
     student.user = user
     student.status = "active"
     student.save(update_fields=["user", "status", "updated_at"])
+
+    # New-student onboarding: if a registration fee was configured before
+    # this student existed but they only activate now, they are a NEW
+    # student — issue their one-time fee unless they already settled
+    # tuition (grandfathered payers are never charged retroactively).
+    from finance.models import Invoice
+    from finance.services import (
+        find_registration_fee_schedule, registration_fee_status,
+    )
+
+    schedule = find_registration_fee_schedule(student)
+    if schedule is not None:
+        info = registration_fee_status(student)
+        already_paid_tuition = Invoice.objects.filter(
+            student=student, amount_paid__gt=0).exists()
+        if (not info["required"] and not info["paid"]
+                and not already_paid_tuition):
+            from finance.models import RegistrationFeeRecord
+
+            record = RegistrationFeeRecord.objects.get(pk=info["record_id"])
+            record.required = True
+            record.is_new_student = True
+            record.amount = schedule.amount
+            record.currency = schedule.currency
+            record.status = "unpaid"
+            record.fee_schedule = schedule
+            record.save(update_fields=[
+                "required", "is_new_student", "amount", "currency",
+                "status", "fee_schedule", "updated_at"])
     token.used_at = timezone.now()
     token.save(update_fields=["used_at", "updated_at"])
     audit("student.account_activated", actor=user, entity=student,

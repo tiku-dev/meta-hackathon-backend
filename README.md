@@ -72,7 +72,8 @@ Admin: `/api/admin/students`, `/api/admin/fee-schedules`, `/api/admin/invoices`,
 `/api/admin/offerings/{id}/publish-results`, `/api/admin/reports/{report}`
 (`students|fee-balances|payments|registrations|results`, `?export=csv`),
 `/api/admin/audit-logs`, `/api/admin/overview`, `/api/admin/payments/reconciliation`
-Student: `/api/student/fees`, `/api/student/registration/available`,
+Student: `/api/student/fees` (includes `registration_fee` status/invoice),
+`/api/student/registration/available`,
 `POST|GET|DELETE /api/student/registrations`, `/api/student/results`,
 `/api/student/transcript`, `/api/student/receipts`
 Payments: `POST /api/invoices/{id}/payments`, `GET /api/payments/{ref}/status`,
@@ -84,8 +85,19 @@ Lecturer/HOD: `PUT /api/lecturer/offerings/{id}/results`,
 Business-rule failures return
 `{"error": {"code": "PAYMENT_THRESHOLD_NOT_MET", "message": ..., "status": 400, "details": ...}}`
 with stable codes: `REGISTRATION_CLOSED`, `PAYMENT_THRESHOLD_NOT_MET`,
-`CREDIT_LIMIT_EXCEEDED`, `COURSE_FULL`, `ALREADY_REGISTERED`,
-`TIMETABLE_CONFLICT`, `RESULTS_LOCKED`, `ACTIVATION_TOKEN_EXPIRED`, ...
+`REGISTRATION_FEE_REQUIRED`, `CREDIT_LIMIT_EXCEEDED`, `COURSE_FULL`,
+`ALREADY_REGISTERED`, `TIMETABLE_CONFLICT`, `RESULTS_LOCKED`,
+`ACTIVATION_TOKEN_EXPIRED`, ...
+
+One-time registration fee: admins set the amount on a `FeeSchedule` with
+`fee_type="registration_fee"` (seed default 10,000 XAF, fully editable).
+NEW students (admitted after that schedule exists) must pay it once —
+`POST /api/invoices/{id}/payments` on any tuition invoice is rejected
+with `REGISTRATION_FEE_REQUIRED` until the DB `RegistrationFeeRecord`
+for the student is `paid`/`waived`; after that the student is never
+charged again. Students admitted before the schedule existed are
+grandfathered (record `not_required`). Finance may waive it via
+`POST /api/admin/invoices/{id}/waive-registration-fee`.
 
 ## Payments - safety rules (SS9)
 

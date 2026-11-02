@@ -52,9 +52,17 @@ def _exemption(student, semester, kind) -> RegistrationExemption | None:
 
 def registration_eligibility(student, semester, *, for_offering=None) -> dict:
     """Return {eligible, reasons[], ...} without raising."""
-    from finance.services import payment_threshold_met
+    from finance.services import payment_threshold_met, registration_fee_status
 
     reasons = []
+    reg_fee = registration_fee_status(student)
+    if reg_fee["required"]:
+        reasons.append({
+            "code": "REGISTRATION_FEE_REQUIRED",
+            "message": "Pay your one-time registration fee before you can "
+                       "pay fees and register for courses.",
+            "registration_fee": reg_fee,
+        })
     if student.status != "active":
         reasons.append({"code": "ACCOUNT_NOT_ACTIVE",
                         "message": "Your student account is not active."})
@@ -102,21 +110,23 @@ def registration_eligibility(student, semester, *, for_offering=None) -> dict:
 
 
 def offering_unavailability(student, offering, semester) -> dict | None:
-    """Why ``offering`` cannot be taken by ``student`` (or None if it can)."""
+    """Why ``offering`` cannot be taken by ``student`` (or None if it can).
+
+    Cross-department electives are allowed: an offering's ``program`` /
+    ``level`` tags describe its home cohort, not a restriction. A student
+    may take a published offering from ANY department; the binding limits
+    are capacity, duplicate-course, timetable and the credit cap checked
+    in :func:`register_courses` (credits sum across all departments).
+    """
     if offering.status != "published":
         return {"code": "OFFERING_NOT_PUBLISHED",
                 "message": "This course offering is not published yet."}
     if offering.semester_id != semester.id:
         return {"code": "WRONG_SEMESTER",
                 "message": "This offering belongs to a different semester."}
-    if offering.program_id and student.program_id and offering.program_id != student.program_id:
-        return {"code": "WRONG_PROGRAM",
-                "message": "This course is not part of your program."}
-    if offering.level_id and student.current_level_id and offering.level_id != student.current_level_id:
-        return {"code": "WRONG_LEVEL",
-                "message": "This course is not for your current level."}
     if CourseRegistration.objects.filter(
-        student=student, offering=offering, status="registered"
+        student=student, semester=semester, status="registered",
+        offering__course_id=offering.course_id,
     ).exists():
         return {"code": "ALREADY_REGISTERED",
                 "message": "You are already registered for this course."}
@@ -175,6 +185,11 @@ def register_courses(actor, student, offering_ids, semester=None):
         raise BusinessError(f"Unknown offering ids: {missing}", code="OFFERING_NOT_FOUND")
     if len(offerings) != len(set(offering_ids)):
         raise BusinessError("Duplicate offerings in request.", code="DUPLICATE_REGISTRATION")
+    course_ids = [o.course_id for o in offerings]
+    if len(course_ids) != len(set(course_ids)):
+        raise BusinessError(
+            "The same course appears twice in this request (e.g. under "
+            "two different departments/cohorts).", code="DUPLICATE_REGISTRATION")
 
     for offering in offerings:
         problem = offering_unavailability(student, offering, semester)

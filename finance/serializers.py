@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     FeeSchedule, Invoice, OfflinePaymentAdjustment, PaymentAttempt,
-    PaymentEvent, Receipt,
+    PaymentEvent, Receipt, RegistrationFeeRecord,
 )
 
 
@@ -53,6 +53,19 @@ class PaymentEventSerializer(serializers.ModelSerializer):
         model = PaymentEvent
         fields = ["id", "provider", "event_id", "event_type", "reference",
                   "processed", "outcome", "created_at"]
+
+
+class RegistrationFeeRecordSerializer(serializers.ModelSerializer):
+    student_matricule = serializers.CharField(source="student.matricule", read_only=True)
+    student_name = serializers.CharField(source="student.full_name", read_only=True)
+
+    class Meta:
+        model = RegistrationFeeRecord
+        fields = ["id", "student", "student_matricule", "student_name",
+                  "required", "is_new_student", "amount", "currency", "status",
+                  "fee_schedule", "paid_invoice", "paid_at", "waived_by",
+                  "waiver_reason", "created_at", "updated_at"]
+        read_only_fields = fields
 
 
 class ReceiptSerializer(serializers.ModelSerializer):

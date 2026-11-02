@@ -159,6 +159,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # --- Domain defaults (overridable per record in the DB) ---------------------
 # 60_000 XAF here is only a *seed/demo* default; never a hard-coded rule.
 DEFAULT_FEE_AMOUNT_XAF = int(os.environ.get("DEFAULT_FEE_AMOUNT_XAF", "60000"))
+# One-time registration fee charged to NEW students before any fee payment.
+# Seed/demo default only — the live amount is the admin-created FeeSchedule
+# with fee_type="registration_fee"; editing that record changes the fee.
+DEFAULT_REGISTRATION_FEE_XAF = int(
+    os.environ.get("DEFAULT_REGISTRATION_FEE_XAF", "10000"))
 DEFAULT_MAX_CREDITS = int(os.environ.get("DEFAULT_MAX_CREDITS", "30"))
 ACTIVATION_TOKEN_TTL_HOURS = int(os.environ.get("ACTIVATION_TOKEN_TTL_HOURS", "72"))
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")

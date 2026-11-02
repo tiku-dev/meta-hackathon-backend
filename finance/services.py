@@ -12,15 +12,17 @@ from core.audit import audit
 from core.exceptions import BusinessError
 
 from .models import (
-    FeeSchedule, Invoice, OfflinePaymentAdjustment, PaymentAttempt,
-    PaymentEvent, Receipt,
+    REGISTRATION_FEE_TYPE, FeeSchedule, Invoice, OfflinePaymentAdjustment,
+    PaymentAttempt, PaymentEvent, Receipt, RegistrationFeeRecord,
 )
 from .providers.base import get_provider
 
 
 def find_fee_schedule(student, semester) -> FeeSchedule | None:
     """Most specific active schedule: program+level > program > unit > any."""
-    qs = FeeSchedule.objects.filter(is_active=True)
+    # The one-time registration fee is never a tuition/fee schedule.
+    qs = FeeSchedule.objects.filter(is_active=True).exclude(
+        fee_type=REGISTRATION_FEE_TYPE)
     if semester is not None:
         scoped = qs.filter(semester=semester)
         if scoped.exists():
@@ -38,9 +40,149 @@ def find_fee_schedule(student, semester) -> FeeSchedule | None:
     return qs.order_by("-created_at").first()
 
 
+# --- One-time registration fee (new students only, paid once ever) ---------
+
+def find_registration_fee_schedule(student=None) -> FeeSchedule | None:
+    """The admin-configured one-time registration fee, or None.
+
+    A ``FeeSchedule`` with ``fee_type='registration_fee'``; the most
+    specific scope wins (program > department > university-wide). Admins
+    change the fee by editing that record — the amount is never hard-coded.
+    """
+    qs = FeeSchedule.objects.filter(
+        is_active=True, fee_type=REGISTRATION_FEE_TYPE)
+    if student is not None and student.program_id:
+        for candidate in (
+            qs.filter(program_id=student.program_id),
+            qs.filter(academic_unit_id=student.program.department_id),
+            qs.filter(program__isnull=True, academic_unit__isnull=True),
+        ):
+            found = candidate.order_by("-created_at").first()
+            if found:
+                return found
+    return qs.filter(
+        program__isnull=True, academic_unit__isnull=True,
+    ).order_by("-created_at").first() or qs.order_by("-created_at").first()
+
+
+def registration_fee_status(student) -> dict:
+    """DB-backed record of the one-time fee for ``student``.
+
+    Creates the per-student record on first sight (idempotent). The fee
+    applies only to students admitted on/after the admin first configured
+    it; everyone already on the books is grandfathered (``not_required``)
+    and never charged. Once ``paid``/``waived`` the DB row itself answers
+    "paid before?" — the student is never charged again.
+    """
+    record = RegistrationFeeRecord.objects.filter(student=student).first()
+    if record is None:
+        schedule = find_registration_fee_schedule(student)
+        if schedule is not None and (
+            student.created_at is None
+            or student.created_at >= schedule.created_at
+        ):
+            record = RegistrationFeeRecord.objects.create(
+                student=student, required=True, is_new_student=True,
+                amount=schedule.amount, currency=schedule.currency,
+                status="unpaid", fee_schedule=schedule)
+        else:
+            record = RegistrationFeeRecord.objects.create(
+                student=student, required=False, is_new_student=False,
+                amount=Decimal("0"),
+                currency=schedule.currency if schedule else "XAF",
+                status="not_required",
+                fee_schedule=schedule if schedule else None)
+    return {
+        "required": bool(record.required and record.status == "unpaid"),
+        "status": record.status,
+        "is_new_student": record.is_new_student,
+        "amount": str(record.amount),
+        "currency": record.currency,
+        "paid": record.is_paid,
+        "invoice_id": record.paid_invoice_id,
+        "paid_at": record.paid_at.isoformat() if record.paid_at else None,
+        "record_id": record.id,
+    }
+
+
+def registration_fee_required(student) -> bool:
+    """True when ``student`` still owes the one-time registration fee."""
+    return registration_fee_status(student)["required"]
+
+
+def ensure_registration_fee_invoice(student, *, actor=None) -> Invoice | None:
+    """The semester-less invoice used to pay the one-time fee (or None).
+
+    Distinct from tuition invoices (``semester`` is NULL), so it never
+    counts toward a semester's fee threshold. None when not owed.
+    """
+    info = registration_fee_status(student)
+    if not info["required"]:
+        return None
+    record = RegistrationFeeRecord.objects.get(pk=info["record_id"])
+    invoice = record.paid_invoice
+    if invoice is None:
+        invoice = Invoice.objects.filter(
+            student=student, semester__isnull=True,
+            fee_schedule=record.fee_schedule).first()
+    if invoice is None:
+        invoice = Invoice.objects.create(
+            student=student, fee_schedule=record.fee_schedule,
+            academic_year=None, semester=None,
+            currency=record.currency, total_due=record.amount,
+            due_date=None, notes="One-time registration fee (new students).")
+        audit("invoice.created", actor=actor, entity=invoice,
+              summary={"student_id": student.id,
+                       "kind": "registration_fee",
+                       "total_due": str(record.amount)})
+    if record.paid_invoice_id != invoice.id:
+        record.paid_invoice = invoice
+        record.save(update_fields=["paid_invoice", "updated_at"])
+    return invoice
+
+
+def sync_registration_fee_from_invoice(invoice) -> None:
+    """Mark the one-time fee paid once its invoice is fully settled."""
+    record = RegistrationFeeRecord.objects.filter(
+        paid_invoice=invoice).first()
+    if record is None or record.status != "unpaid":
+        return
+    if invoice.status in ("paid", "waived") or invoice.balance <= 0:
+        record.status = "paid"
+        record.paid_at = timezone.now()
+        record.save(update_fields=["status", "paid_at", "updated_at"])
+        audit("finance.registration_fee_paid", entity=record,
+              summary={"student_id": record.student_id,
+                       "invoice_id": invoice.id,
+                       "amount": str(record.amount)})
+
+
+@transaction.atomic
+def waive_registration_fee(actor, student, *, reason=""):
+    """Finance waives the one-time fee (recorded + audited)."""
+    info = registration_fee_status(student)
+    record = RegistrationFeeRecord.objects.select_for_update().get(
+        pk=info["record_id"])
+    if record.status == "paid":
+        raise BusinessError("This registration fee is already paid.",
+                            code="ALREADY_PAID")
+    record.status = "waived"
+    record.waived_by = (actor if getattr(actor, "is_authenticated", False)
+                        else None)
+    record.waiver_reason = reason
+    record.paid_at = timezone.now()
+    record.save(update_fields=["status", "waived_by", "waiver_reason",
+                               "paid_at", "updated_at"])
+    audit("finance.registration_fee_waived", actor=actor, entity=record,
+          reason=reason, summary={"student_id": student.id})
+    return record
+
+
 def ensure_invoice(student, semester, *, actor=None) -> Invoice:
     """Get-or-create the student's invoice for a semester from the schedule."""
-    invoice = Invoice.objects.filter(student=student, semester=semester).first()
+    invoice = Invoice.objects.filter(
+        student=student, semester=semester).exclude(
+        fee_schedule__fee_type=REGISTRATION_FEE_TYPE).first()
     if invoice:
         return invoice
     schedule = find_fee_schedule(student, semester)
@@ -105,9 +247,17 @@ def find_attempt(reference: str) -> PaymentAttempt | None:
     return attempt
 
 
+def is_registration_fee_invoice(invoice) -> bool:
+    """True when ``invoice`` is the student's one-time registration fee."""
+    return RegistrationFeeRecord.objects.filter(
+        paid_invoice_id=invoice.id).exists()
+
+
 def payment_threshold_met(student, semester):
     """(bool, info) – has *verified* paid amount reached the gate?"""
-    invoice = Invoice.objects.filter(student=student, semester=semester).first()
+    invoice = Invoice.objects.filter(
+        student=student, semester=semester).exclude(
+        fee_schedule__fee_type=REGISTRATION_FEE_TYPE).first()
     if invoice is None:
         return False, {"invoice_id": None, "amount_paid": "0", "required": None,
                        "balance": None}
@@ -133,6 +283,16 @@ def start_payment(actor, invoice: Invoice, *, amount=None, channel="",
     if invoice.status in ("paid", "waived", "cancelled"):
         raise BusinessError(f"Invoice is {invoice.status}; nothing to pay.",
                             code="INVOICE_NOT_PAYABLE")
+    # One-time gate: a NEW student must settle the registration fee before
+    # ANY other (tuition/fee) payment. The fee's own invoice is exempt —
+    # it is the thing being paid. Once paid, the DB record keeps the
+    # student exempt forever (paid once, never charged again).
+    if not is_registration_fee_invoice(invoice) and registration_fee_required(
+            invoice.student):
+        raise BusinessError(
+            "Pay your one-time registration fee before paying school fees. "
+            "You only pay it once — after that, fee payments unlock.",
+            code="REGISTRATION_FEE_REQUIRED")
     amount = Decimal(amount) if amount is not None else invoice.balance
     if amount <= 0:
         raise BusinessError("Payment amount must be positive.", code="INVALID_AMOUNT")
@@ -213,6 +373,7 @@ def reconcile_attempt(attempt: PaymentAttempt, *, verified_status: str,
         invoice.amount_paid += attempt.amount
         invoice.refresh_status()
         invoice.save(update_fields=["amount_paid", "status", "updated_at"])
+        sync_registration_fee_from_invoice(invoice)
         attempt.status = "succeeded"
         attempt.paid_at = timezone.now()
         attempt.save(update_fields=["status", "paid_at", "updated_at"])
@@ -290,6 +451,7 @@ def approve_offline_adjustment(actor, adjustment: OfflinePaymentAdjustment,
         invoice.amount_paid += adjustment.amount
         invoice.refresh_status()
         invoice.save(update_fields=["amount_paid", "status", "updated_at"])
+        sync_registration_fee_from_invoice(invoice)
         from communication.services import notify
 
         notify(invoice.student.user, "payment", "Offline payment recorded",

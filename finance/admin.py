@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from .models import (
     FeeSchedule, Invoice, OfflinePaymentAdjustment, PaymentAttempt,
-    PaymentEvent, Receipt,
+    PaymentEvent, Receipt, RegistrationFeeRecord,
 )
 
 
@@ -27,6 +27,14 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         # Nobody may hand-edit a payment into 'succeeded' (blueprint SS9).
         return False
+
+
+@admin.register(RegistrationFeeRecord)
+class RegistrationFeeRecordAdmin(admin.ModelAdmin):
+    list_display = ("student", "amount", "currency", "status", "is_new_student", "paid_at")
+    list_filter = ("status", "is_new_student", "currency")
+    search_fields = ("student__matricule", "student__first_name", "student__last_name")
+    readonly_fields = ("student", "amount", "currency", "status", "paid_invoice", "paid_at")
 
 
 admin.site.register(PaymentEvent)

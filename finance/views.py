@@ -12,16 +12,18 @@ from core.permissions import IsAdmin, IsFinance, has_role
 
 from .models import (
     FeeSchedule, Invoice, OfflinePaymentAdjustment, PaymentAttempt, Receipt,
+    RegistrationFeeRecord,
 )
 from .providers.base import get_provider
 from .serializers import (
     FeeScheduleSerializer, InvoiceSerializer,
     OfflinePaymentAdjustmentSerializer, PaymentAttemptSerializer,
-    ReceiptSerializer,
+    ReceiptSerializer, RegistrationFeeRecordSerializer,
 )
 from .services import (
-    approve_offline_adjustment, ensure_invoice, find_attempt, handle_webhook,
-    payment_options, reconcile_attempt, start_payment,
+    approve_offline_adjustment, ensure_invoice, ensure_registration_fee_invoice,
+    find_attempt, handle_webhook, payment_options, reconcile_attempt,
+    registration_fee_status, start_payment, waive_registration_fee,
 )
 
 
@@ -92,6 +94,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Response(InvoiceSerializer(invoice).data,
                         status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["post"], url_path="waive-registration-fee")
+    def waive_registration_fee(self, request, pk=None):
+        """Waive the student's one-time registration fee (audited)."""
+        invoice = self.get_object()
+        record = waive_registration_fee(
+            request.user, invoice.student,
+            reason=request.data.get("reason", ""))
+        return Response(RegistrationFeeRecordSerializer(record).data)
+
     @action(detail=True, methods=["post"])
     def waive(self, request, pk=None):
         invoice = self.get_object()
@@ -119,6 +130,16 @@ class StudentFeesView(APIView):
                 current_invoice = ensure_invoice(student, semester, actor=request.user)
             except BusinessError:
                 current_invoice = invoices.filter(semester=semester).first()
+        # One-time registration fee first: surface it (and its payable
+        # invoice) ahead of tuition for NEW students who still owe it.
+        reg_fee = registration_fee_status(student)
+        if reg_fee["required"]:
+            reg_invoice = ensure_registration_fee_invoice(
+                student, actor=request.user)
+            reg_fee["invoice"] = (
+                InvoiceSerializer(reg_invoice).data if reg_invoice else None)
+            invoices = Invoice.objects.filter(
+                student=student).select_related("fee_schedule")
         eligibility = (
             registration_eligibility(student, semester) if semester else None
         )
@@ -127,6 +148,7 @@ class StudentFeesView(APIView):
             "current_invoice": (
                 InvoiceSerializer(current_invoice).data if current_invoice else None
             ),
+            "registration_fee": reg_fee,
             "registration_deadline": semester.registration_deadline if semester else None,
             "fee_deadline": semester.fee_deadline if semester else None,
             "eligibility": eligibility,
@@ -323,6 +345,7 @@ class StudentMeView(APIView):
         invoices = Invoice.objects.filter(student=student)
         return Response({
             "student": StudentProfileSerializer(student).data,
+            "registration_fee": registration_fee_status(student),
             "semester": (
                 {"id": semester.id, "label": str(semester),
                  "registration_deadline": semester.registration_deadline,

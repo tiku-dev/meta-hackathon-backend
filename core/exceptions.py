@@ -2,7 +2,8 @@
 
 Every business-rule rejection carries a stable machine-readable ``code``
 (blueprint SS8): REGISTRATION_CLOSED, PAYMENT_THRESHOLD_NOT_MET,
-CREDIT_LIMIT_EXCEEDED, COURSE_FULL, TIMETABLE_CONFLICT, RESULTS_LOCKED, ...
+REGISTRATION_FEE_REQUIRED, CREDIT_LIMIT_EXCEEDED, COURSE_FULL,
+TIMETABLE_CONFLICT, RESULTS_LOCKED, ...
 """
 from rest_framework import status
 from rest_framework.exceptions import APIException

@@ -194,10 +194,17 @@ class TimetableSessionViewSet(viewsets.ModelViewSet):
             student = getattr(user, "student_profile", None)
             if student is None:
                 return qs.none()
-            return qs.filter(
+            # Own cohort's schedule plus anything the student actually
+            # registered for (incl. cross-department electives).
+            own = qs.filter(
                 offering__program_id=student.program_id,
                 offering__level_id=student.current_level_id,
             )
+            registered = qs.filter(
+                offering__registrations__student=student,
+                offering__registrations__status="registered",
+            )
+            return (own | registered).distinct()
         if has_role(user, "lecturer", "hod"):
             profile = getattr(user, "lecturer_profile", None)
             own = qs.filter(offering__lecturer=profile) if profile else qs.none()
@@ -260,20 +267,36 @@ class RegistrationViewSet(viewsets.ViewSet):
                                           "message": "No semester is currently open."}],
                              "offerings": []})
         eligibility = registration_eligibility(student, semester)
-        offerings = CourseOffering.objects.filter(
-            semester=semester, status="published").select_related("course")
-        if student.program_id:
-            offerings = offerings.filter(program_id=student.program_id)
-        if student.current_level_id:
-            offerings = offerings.filter(level_id=student.current_level_id)
+        # Cross-department electives: list every published offering for the
+        # semester, from every department — not just the student's own
+        # program/level. `?department=<id>` narrows the list for browsing.
+        offerings = (
+            CourseOffering.objects.filter(semester=semester, status="published")
+            .select_related("course", "course__department")
+            .order_by("course__department__name", "course__code")
+        )
+        department = request.query_params.get("department")
+        if department:
+            offerings = offerings.filter(course__department_id=department)
+        student_dept_id = (
+            student.program.department_id if student.program_id else None
+        )
         data = []
         for offering in offerings:
             problem = offering_unavailability(student, offering, semester)
             item = CourseOfferingSerializer(offering).data
             item["available"] = problem is None
             item["unavailable_reason"] = problem
+            item["is_cross_department"] = bool(
+                item["department_id"] and student_dept_id
+                and item["department_id"] != student_dept_id
+            )
             data.append(item)
-        return Response({**eligibility, "offerings": data})
+        departments = sorted(
+            {o["department_name"] for o in data if o["department_name"]}
+        )
+        return Response({**eligibility, "offerings": data,
+                         "departments": departments})
 
     @action(detail=False, methods=["get"])
     def eligibility(self, request):
@@ -378,6 +401,13 @@ class TimetableView(APIView):
         ):
             student = getattr(request.user, "student_profile", None)
             if student is not None:
-                qs = qs.filter(offering__program_id=student.program_id,
-                               offering__level_id=student.current_level_id)
+                # Own cohort's schedule plus anything the student actually
+                # registered for (incl. cross-department electives).
+                own = qs.filter(offering__program_id=student.program_id,
+                                offering__level_id=student.current_level_id)
+                registered = qs.filter(
+                    offering__registrations__student=student,
+                    offering__registrations__status="registered",
+                )
+                qs = (own | registered).distinct()
         return Response(TimetableSessionSerializer(qs, many=True).data)

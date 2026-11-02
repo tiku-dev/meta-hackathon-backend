@@ -7,6 +7,9 @@ from django.db import models
 from core.models import TimeStampedModel
 
 CURRENCIES = [("XAF", "XAF (Central African CFA franc)"), ("USD", "USD")]
+# One-time fee a NEW student must pay before any tuition/fee payment.
+# Admin sets the amount on a FeeSchedule with this fee_type; paid once ever.
+REGISTRATION_FEE_TYPE = "registration_fee"
 PAYMENT_STATUSES = [
     ("created", "Created"), ("pending", "Pending"), ("succeeded", "Succeeded"),
     ("failed", "Failed"), ("cancelled", "Cancelled"), ("refunded", "Refunded"),
@@ -142,6 +145,60 @@ class PaymentAttempt(TimeStampedModel):
 
     def __str__(self):
         return f"{self.reference} {self.amount} {self.currency} ({self.status})"
+
+
+class RegistrationFeeRecord(TimeStampedModel):
+    """The one-time registration fee owed by a NEW student.
+
+    One row per student, ever (``OneToOneField``): the DB itself answers
+    "has this student paid the registration fee before?" — once ``status``
+    is ``paid`` the student is never charged again. ``is_new_student``
+    snapshots applicability at issue time: students who were already
+    paying tuition when the fee was rolled out are grandfathered
+    (``required=False``) and are never charged retroactively. Statuses:
+    ``not_required`` (no admin fee configured), ``unpaid``, ``paid``,
+    ``waived`` (finance waived it with a recorded reason).
+    """
+
+    STATUS_CHOICES = [
+        ("not_required", "Not required"), ("unpaid", "Unpaid"),
+        ("paid", "Paid"), ("waived", "Waived"),
+    ]
+
+    student = models.OneToOneField(
+        "accounts.StudentProfile", on_delete=models.CASCADE,
+        related_name="registration_fee_record")
+    required = models.BooleanField(default=True)
+    is_new_student = models.BooleanField(
+        default=True,
+        help_text="False for grandfathered students who never owed the fee.")
+    amount = models.DecimalField(max_digits=14, decimal_places=2,
+                                 default=Decimal("0"))
+    currency = models.CharField(max_length=3, default="XAF")
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES,
+                              default="unpaid", db_index=True)
+    fee_schedule = models.ForeignKey(
+        FeeSchedule, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="registration_fee_records")
+    paid_invoice = models.ForeignKey(
+        Invoice, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="registration_fee_records",
+        help_text="The (semester-less) invoice the fee was paid through.")
+    paid_at = models.DateTimeField(null=True, blank=True)
+    waived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="waived_registration_fees")
+    waiver_reason = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"RegistrationFee {self.student} {self.amount} {self.currency} ({self.status})"
+
+    @property
+    def is_paid(self) -> bool:
+        return self.status in ("paid", "waived", "not_required")
 
 
 class PaymentEvent(TimeStampedModel):
