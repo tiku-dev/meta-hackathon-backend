@@ -49,6 +49,81 @@ def generate_matricule(student: StudentProfile) -> str:
 
 
 @transaction.atomic
+def send_activation_email(student: StudentProfile, token: str, link: str, *, fail_silently: bool = False) -> bool:
+    """Send an account activation email with matricule, code, and link."""
+    from django.core.mail import EmailMultiAlternatives
+    from django.utils.html import escape
+
+    if not student.email:
+        return False
+
+    hours = getattr(settings, "ACTIVATION_TOKEN_TTL_HOURS", 72)
+    univ = getattr(settings, "UNIVERSITY_NAME", "University") or "University"
+    subject = f"Activate your {univ} student account"
+
+    text_content = (
+        f"Hello {student.full_name},\n\n"
+        f"Your student account has been created at {univ}.\n\n"
+        f"Matricule: {student.matricule}\n"
+        f"Activation Code: {token}\n"
+        f"Activation Link: {link}\n\n"
+        f"Please activate your account within {hours} hours by visiting the link above.\n"
+        f"You will need your matricule, this email address, and your activation code.\n\n"
+        f"Best regards,\n{univ} Admissions"
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; margin: 0; padding: 24px; color: #1e293b;">
+  <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+    <div style="background: #0f172a; padding: 28px 32px; color: #ffffff;">
+      <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: #f8fafc;">{escape(univ)}</h2>
+      <p style="margin: 4px 0 0 0; font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Student Portal Activation</p>
+    </div>
+    <div style="padding: 32px;">
+      <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.6;">Hello <strong>{escape(student.full_name)}</strong>,</p>
+      <p style="margin: 0 0 24px; font-size: 14px; color: #475569; line-height: 1.6;">
+        Your student account has been created. Use the credentials below to activate your account within <strong>{hours} hours</strong>.
+      </p>
+
+      <div style="background: #f1f5f9; border-radius: 12px; padding: 18px 20px; margin-bottom: 24px;">
+        <div style="margin-bottom: 12px;">
+          <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; display: block;">Matricule</span>
+          <span style="font-family: monospace; font-size: 15px; font-weight: 700; color: #0f172a;">{escape(student.matricule or '—')}</span>
+        </div>
+        <div>
+          <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; display: block;">Activation Code</span>
+          <span style="font-family: monospace; font-size: 15px; font-weight: 700; color: #0f172a; word-break: break-all;">{escape(token)}</span>
+        </div>
+      </div>
+
+      <div style="text-align: center; margin: 32px 0;">
+        <a href="{link}" style="background: #1e293b; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block;">
+          Activate My Account &rarr;
+        </a>
+      </div>
+
+      <p style="margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.5; border-top: 1px solid #e2e8f0; padding-top: 20px;">
+        If the button above does not work, copy and paste this link into your browser:<br>
+        <a href="{link}" style="color: #2563eb; word-break: break-all;">{link}</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_content,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[student.email],
+    )
+    msg.attach_alternative(html_content, "text/html")
+    msg.send(fail_silently=fail_silently)
+    return True
+
+
 def issue_matricule(actor, student: StudentProfile, *, send_email: bool = True) -> dict:
     """Issue (or re-issue) a matricule + fresh one-time activation token.
 
@@ -89,19 +164,7 @@ def issue_matricule(actor, student: StudentProfile, *, send_email: bool = True) 
         f"?matricule={student.matricule}&email={student.email}&token={raw}"
     )
     if send_email:
-        from django.core.mail import send_mail
-
-        send_mail(
-            "Activate your student account",
-            f"Your matricule is {student.matricule}.\n"
-            f"Your email on record is {student.email}.\n"
-            f"Activate your account within {settings.ACTIVATION_TOKEN_TTL_HOURS} hours: {link}\n"
-            f"You will need your matricule, this email address and your activation code.\n"
-            f"Activation code: {raw}",
-            settings.DEFAULT_FROM_EMAIL,
-            [student.email],
-            fail_silently=True,
-        )
+        send_activation_email(student, raw, link, fail_silently=True)
     return {"matricule": student.matricule, "activation_token": raw,
             "activation_link": link, "expires_at": token.expires_at}
 

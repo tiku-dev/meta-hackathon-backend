@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY", "django-insecure-hackathon-demo-key-change-me"
@@ -189,10 +189,33 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_SANDBOX = STRIPE_SECRET_KEY.startswith(("sk_test_", "rk_test_"))
 
+# --- Email configuration ------------------------------------------------------
 EMAIL_BACKEND = os.environ.get(
-    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.smtp.EmailBackend"
+    if os.environ.get("EMAIL_HOST_USER") or os.environ.get("EMAIL_HOST")
+    else "django.core.mail.backends.console.EmailBackend",
 )
-DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "no-reply@example.edu")
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "465") or 465)
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "").strip()
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "").strip().replace(" ", "")
+
+# In Django, EMAIL_USE_SSL and EMAIL_USE_TLS are mutually exclusive.
+if EMAIL_PORT == 465:
+    EMAIL_USE_SSL = True
+    EMAIL_USE_TLS = False
+else:
+    EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "0").lower() in ("1", "true", "yes")
+    EMAIL_USE_TLS = (
+        os.environ.get("EMAIL_USE_TLS", "1").lower() in ("1", "true", "yes")
+        and not EMAIL_USE_SSL
+    )
+
+EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "10") or 10)
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "").strip()
+if not DEFAULT_FROM_EMAIL or (EMAIL_HOST == "smtp.gmail.com" and "@" in EMAIL_HOST_USER and ("example.edu" in DEFAULT_FROM_EMAIL or "metahackathon.edu" in DEFAULT_FROM_EMAIL)):
+    DEFAULT_FROM_EMAIL = f"University Admissions <{EMAIL_HOST_USER}>" if EMAIL_HOST_USER else "no-reply@example.edu"
 
 # --- Emergency contacts (student → administration) ---------------------------
 # Published on the student "Contact administration" page. Leave blank to

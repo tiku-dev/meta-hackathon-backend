@@ -24,7 +24,9 @@ from .serializers import (
     StudentProspectSerializer,
     UserSerializer,
 )
-from .services import activate_account, issue_matricule, revoke_student
+from django.conf import settings
+from django.utils import timezone
+from .services import _hash, activate_account, issue_matricule, revoke_student, send_activation_email
 
 
 @api_view(["POST"])
@@ -77,7 +79,7 @@ class StudentAdminViewSet(viewsets.ModelViewSet):
         return qs.filter(user=user)
 
     def get_permissions(self):
-        if self.action in ("create", "issue_matricule", "revoke", "import_csv", "destroy"):
+        if self.action in ("create", "issue_matricule", "send_activation_email", "revoke", "import_csv", "destroy"):
             return [IsAdmissions()]
         return super().get_permissions()
 
@@ -107,6 +109,48 @@ class StudentAdminViewSet(viewsets.ModelViewSet):
              "activation_link": result["activation_link"],
              "expires_at": result["expires_at"]}
         )
+
+    @action(detail=True, methods=["post"], url_path="send-activation-email")
+    def send_activation_email(self, request, pk=None):
+        student = self.get_object()
+        if not student.email:
+            raise BusinessError("This student does not have an email address.", code="EMAIL_REQUIRED")
+
+        raw_token = (request.data.get("activation_token") or "").strip()
+        link = (request.data.get("activation_link") or "").strip()
+
+        if raw_token:
+            token_obj = student.activation_tokens.filter(
+                token_hash=_hash(raw_token),
+                used_at__isnull=True,
+                revoked_at__isnull=True,
+                expires_at__gt=timezone.now(),
+            ).first()
+            if not token_obj:
+                raise BusinessError("The provided activation token is invalid or expired.", code="ACTIVATION_TOKEN_INVALID")
+            if not link:
+                base = settings.FRONTEND_BASE_URL.rstrip("/")
+                link = f"{base}/activate?matricule={student.matricule}&email={student.email}&token={raw_token}"
+            try:
+                send_activation_email(student, raw_token, link, fail_silently=False)
+            except Exception as exc:
+                raise BusinessError(f"Failed to send email to {student.email}: {exc}", code="EMAIL_SEND_FAILED")
+            return Response({"success": True, "email": student.email, "reissued": False})
+        else:
+            result = issue_matricule(request.user, student, send_email=False)
+            try:
+                send_activation_email(student, result["activation_token"], result["activation_link"], fail_silently=False)
+            except Exception as exc:
+                raise BusinessError(f"Failed to send email to {student.email}: {exc}", code="EMAIL_SEND_FAILED")
+            return Response({
+                "success": True,
+                "email": student.email,
+                "reissued": True,
+                "matricule": result["matricule"],
+                "activation_token": result["activation_token"],
+                "activation_link": result["activation_link"],
+                "expires_at": result["expires_at"],
+            })
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
