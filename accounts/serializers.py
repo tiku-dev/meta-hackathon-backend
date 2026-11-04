@@ -82,10 +82,39 @@ class UserRoleSerializer(serializers.ModelSerializer):
                   "created_at", "updated_at"]
 
 
+class GenderChoiceField(serializers.ChoiceField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("choices", StudentProfile.GENDER_CHOICES)
+        kwargs.setdefault("error_messages", {
+            "required": "Gender is required.",
+            "null": "Gender is required.",
+            "blank": "Gender is required.",
+            "invalid_choice": "Gender must be either male or female.",
+        })
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        if data is None or str(data).strip() == "":
+            self.fail("required")
+        val = str(data).strip().lower()
+        return super().to_internal_value(val)
+
+
 class StudentProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField()
     program_name = serializers.CharField(source="program.name", read_only=True, default=None)
     level_label = serializers.CharField(source="current_level.label", read_only=True, default=None)
+    gender = GenderChoiceField(required=True)
+    gender = GenderChoiceField(required=True)
+    _remove_me_1 = True
+    gender = serializers.ChoiceField(
+        choices=StudentProfile.GENDER_CHOICES,
+        required=True,
+        error_messages={
+            "required": "Gender is required.",
+            "invalid_choice": "Gender must be either male or female.",
+        },
+    )
 
     class Meta:
         model = StudentProfile
@@ -96,12 +125,49 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             "admission_year", "student_category", "status",
             "matricule_issued_at", "matricule_revoked", "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "user", "matricule", "matricule_issued_at",
-                            "matricule_revoked", "created_at", "updated_at"]
+
+        read_only_fields = ["id", "user", "matricule", "matricule_issued_at", "matricule_revoked", "created_at", "updated_at"]
+
+    def validate_gender(self, value):
+        if not value:
+            raise serializers.ValidationError("Gender is required.")
+        val = str(value).strip().lower()
+        if val not in ("male", "female"):
+            raise serializers.ValidationError("Gender must be either male or female.")
+        return val
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        program = attrs.get("program") or (self.instance.program if self.instance else None)
+        current_level = attrs.get("current_level") or (self.instance.current_level if self.instance else None)
+        if program and current_level and current_level.program_id != program.id:
+            raise serializers.ValidationError({
+                "current_level": f"Selected level '{current_level.label}' does not belong to program '{program.name}'."
+            })
+        return attrs
+
+
 
 
 class StudentProspectSerializer(serializers.ModelSerializer):
     """Admin creates a prospect; matricule/activation are issued separately."""
+
+
+
+    gender = GenderChoiceField(required=True)
+
+
+
+
+    gender = serializers.ChoiceField(
+        choices=StudentProfile.GENDER_CHOICES,
+        required=True,
+        error_messages={
+            "required": "Gender is required.",
+            "invalid_choice": "Gender must be either male or female.",
+        },
+    )
+
 
     class Meta:
         model = StudentProfile
@@ -110,6 +176,26 @@ class StudentProspectSerializer(serializers.ModelSerializer):
             "gender", "address", "program", "current_level", "admission_year",
             "student_category",
         ]
+
+
+    def validate_gender(self, value):
+        if not value:
+            raise serializers.ValidationError("Gender is required.")
+        val = str(value).strip().lower()
+        if val not in ("male", "female"):
+            raise serializers.ValidationError("Gender must be either male or female.")
+        return val
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        program = attrs.get("program")
+        current_level = attrs.get("current_level")
+        if program and current_level and current_level.program_id != program.id:
+            raise serializers.ValidationError({
+                "current_level": f"Selected level '{current_level.label}' does not belong to program '{program.name}'."
+            })
+        return attrs
+
 
 
 class LecturerProfileSerializer(serializers.ModelSerializer):
@@ -123,6 +209,7 @@ class LecturerProfileSerializer(serializers.ModelSerializer):
             "email", "phone", "department", "department_name", "is_hod",
             "status", "created_at", "updated_at",
         ]
+
         read_only_fields = ["id", "created_at", "updated_at"]
 
 

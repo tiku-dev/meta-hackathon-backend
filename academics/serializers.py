@@ -29,9 +29,10 @@ class ProgramSerializer(serializers.ModelSerializer):
 
 
 class LevelSerializer(serializers.ModelSerializer):
+    program_name = serializers.CharField(source="program.name", read_only=True, default=None)
     class Meta:
         model = Level
-        fields = ["id", "program", "label", "order", "default_max_credits",
+        fields = ["id", "program", "program_name", "label", "order", "default_max_credits",
                   "created_at", "updated_at"]
 
 

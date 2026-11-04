@@ -97,7 +97,12 @@ class StudentProfile(TimeStampedModel):
     email = models.EmailField(db_index=True)
     phone = models.CharField(max_length=32, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
-    gender = models.CharField(max_length=16, blank=True)
+    GENDER_CHOICES = [
+        ("male", "Male"),
+        ("female", "Female"),
+    ]
+
+    gender = models.CharField(max_length=16, choices=GENDER_CHOICES, blank=True)
     address = models.CharField(max_length=255, blank=True)
     program = models.ForeignKey(
         "academics.Program", null=True, blank=True,

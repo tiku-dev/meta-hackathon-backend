@@ -60,7 +60,7 @@ class ProgramViewSet(ReadOnlyOrAcademicsAdmin):
 
 
 class LevelViewSet(ReadOnlyOrAcademicsAdmin):
-    queryset = Level.objects.all()
+    queryset = Level.objects.select_related("program").all()
     serializer_class = LevelSerializer
     filterset_fields = ["program"]
 
