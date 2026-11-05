@@ -16,27 +16,6 @@ class FeeScheduleSerializer(serializers.ModelSerializer):
                   "created_at", "updated_at"]
 
 
-class InvoiceSerializer(serializers.ModelSerializer):
-    balance = serializers.ReadOnlyField()
-    student_matricule = serializers.CharField(source="student.matricule", read_only=True)
-    student_name = serializers.CharField(source="student.full_name", read_only=True)
-    required_for_registration = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Invoice
-        fields = ["id", "student", "student_matricule", "student_name",
-                  "fee_schedule", "academic_year", "semester", "currency",
-                  "total_due", "amount_paid", "balance", "status", "due_date",
-                  "alt_currency", "alt_amount", "fx_rate", "fx_quoted_at",
-                  "notes", "required_for_registration", "created_at", "updated_at"]
-        read_only_fields = ["id", "amount_paid", "status", "created_at", "updated_at"]
-
-    def get_required_for_registration(self, obj):
-        if obj.fee_schedule_id:
-            return str(obj.fee_schedule.required_for_registration(obj.total_due))
-        return str(obj.total_due)
-
-
 class PaymentAttemptSerializer(serializers.ModelSerializer):
     invoice_id = serializers.IntegerField(source="invoice.id", read_only=True)
 
@@ -46,6 +25,35 @@ class PaymentAttemptSerializer(serializers.ModelSerializer):
                   "provider_reference", "amount", "currency", "status", "channel",
                   "checkout_url", "failure_reason", "paid_at",
                   "created_at", "updated_at"]
+
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    balance = serializers.ReadOnlyField()
+    student_matricule = serializers.CharField(source="student.matricule", read_only=True)
+    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    required_for_registration = serializers.SerializerMethodField()
+    pending_attempt = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = ["id", "student", "student_matricule", "student_name",
+                  "fee_schedule", "academic_year", "semester", "currency",
+                  "total_due", "amount_paid", "balance", "status", "due_date",
+                  "alt_currency", "alt_amount", "fx_rate", "fx_quoted_at",
+                  "notes", "required_for_registration", "pending_attempt",
+                  "created_at", "updated_at"]
+        read_only_fields = ["id", "amount_paid", "status", "created_at", "updated_at"]
+
+    def get_required_for_registration(self, obj):
+        if obj.fee_schedule_id:
+            return str(obj.fee_schedule.required_for_registration(obj.total_due))
+        return str(obj.total_due)
+
+    def get_pending_attempt(self, obj):
+        attempt = obj.payment_attempts.filter(status="pending").order_by("-created_at").first()
+        if attempt:
+            return PaymentAttemptSerializer(attempt).data
+        return None
 
 
 class PaymentEventSerializer(serializers.ModelSerializer):

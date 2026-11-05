@@ -6,7 +6,7 @@ from django.db import models
 
 from core.models import TimeStampedModel
 
-CURRENCIES = [("XAF", "XAF (Central African CFA franc)"), ("USD", "USD")]
+CURRENCIES = [("USD", "USD ($)"), ("XAF", "XAF (Central African CFA franc)")]
 # One-time fee a NEW student must pay before any tuition/fee payment.
 # Admin sets the amount on a FeeSchedule with this fee_type; paid once ever.
 REGISTRATION_FEE_TYPE = "registration_fee"
@@ -37,7 +37,7 @@ class FeeSchedule(TimeStampedModel):
         on_delete=models.SET_NULL, related_name="fee_schedules")
     fee_type = models.CharField(max_length=40, default="registration")
     student_category = models.CharField(max_length=32, blank=True)
-    currency = models.CharField(max_length=3, choices=CURRENCIES, default="XAF")
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="USD")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     # Enrollment gate: percent of the invoice that must be *verified paid*…
     registration_threshold_type = models.CharField(
@@ -83,7 +83,7 @@ class Invoice(TimeStampedModel):
     semester = models.ForeignKey(
         "academics.Semester", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="invoices")
-    currency = models.CharField(max_length=3, choices=CURRENCIES, default="XAF")
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="USD")
     total_due = models.DecimalField(max_digits=14, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2,
                                       default=Decimal("0"))
@@ -118,6 +118,7 @@ class Invoice(TimeStampedModel):
         else:
             self.status = "unpaid"
 
+
 class PaymentAttempt(TimeStampedModel):
     """One attempt to pay an invoice through a provider. Internal source of truth."""
 
@@ -128,7 +129,7 @@ class PaymentAttempt(TimeStampedModel):
                                  help_text="Internal unique reference.")
     provider_reference = models.CharField(max_length=128, blank=True, db_index=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    currency = models.CharField(max_length=3, default="XAF")
+    currency = models.CharField(max_length=3, default="USD")
     status = models.CharField(max_length=16, choices=PAYMENT_STATUSES, default="created",
                               db_index=True)
     channel = models.CharField(max_length=32, blank=True,
@@ -174,7 +175,7 @@ class RegistrationFeeRecord(TimeStampedModel):
         help_text="False for grandfathered students who never owed the fee.")
     amount = models.DecimalField(max_digits=14, decimal_places=2,
                                  default=Decimal("0"))
-    currency = models.CharField(max_length=3, default="XAF")
+    currency = models.CharField(max_length=3, default="USD")
     status = models.CharField(max_length=16, choices=STATUS_CHOICES,
                               default="unpaid", db_index=True)
     fee_schedule = models.ForeignKey(
@@ -224,7 +225,7 @@ class Receipt(TimeStampedModel):
         on_delete=models.SET_NULL, related_name="receipt")
     receipt_number = models.CharField(max_length=40, unique=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    currency = models.CharField(max_length=3, default="XAF")
+    currency = models.CharField(max_length=3, default="USD")
     issued_at = models.DateTimeField(auto_now_add=True)
     file_path = models.CharField(max_length=255, blank=True)
 
@@ -246,7 +247,7 @@ class OfflinePaymentAdjustment(TimeStampedModel):
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE,
                                 related_name="offline_adjustments")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    currency = models.CharField(max_length=3, default="XAF")
+    currency = models.CharField(max_length=3, default="USD")
     method = models.CharField(max_length=40, help_text="cash, bank transfer, ...")
     evidence = models.CharField(max_length=255, blank=True,
                                 help_text="Reference/path of supporting evidence.")

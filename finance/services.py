@@ -89,7 +89,7 @@ def registration_fee_status(student) -> dict:
             record = RegistrationFeeRecord.objects.create(
                 student=student, required=False, is_new_student=False,
                 amount=Decimal("0"),
-                currency=schedule.currency if schedule else "XAF",
+                currency=schedule.currency if schedule else "USD",
                 status="not_required",
                 fee_schedule=schedule if schedule else None)
     return {
@@ -301,6 +301,11 @@ def start_payment(actor, invoice: Invoice, *, amount=None, channel="",
                             code="AMOUNT_EXCEEDS_BALANCE")
     provider = get_provider(provider_name)
     reference = f"PAY-{uuid.uuid4().hex[:16].upper()}"
+    # Cancel any previous pending attempt for this invoice when choosing a method
+    PaymentAttempt.objects.filter(
+        invoice=invoice, status="pending"
+    ).update(status="cancelled", failure_reason="Superceded by new payment attempt")
+
     attempt = PaymentAttempt.objects.create(
         invoice=invoice, provider=provider.name, reference=reference,
         amount=amount, currency=invoice.currency, status="pending",
@@ -345,7 +350,10 @@ def reconcile_attempt(attempt: PaymentAttempt, *, verified_status: str,
         except Exception:  # noqa: BLE001
             problems.append("unparseable amount")
     if currency and currency.upper() != attempt.currency.upper():
-        problems.append("currency mismatch")
+        if attempt.provider == "notchpay" and {currency.upper(), attempt.currency.upper()} <= {"USD", "XAF"}:
+            pass
+        else:
+            problems.append("currency mismatch")
 
     if verified_status == "succeeded" and problems:
         attempt.status = "needs_review"

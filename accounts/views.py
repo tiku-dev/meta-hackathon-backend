@@ -26,7 +26,7 @@ from .serializers import (
 )
 from django.conf import settings
 from django.utils import timezone
-from .services import _hash, activate_account, issue_matricule, revoke_student, send_activation_email
+from .services import _hash, activate_account, issue_matricule, revoke_student, send_activation_email, suspend_student, unsuspend_student
 
 
 @api_view(["POST"])
@@ -79,7 +79,7 @@ class StudentAdminViewSet(viewsets.ModelViewSet):
         return qs.filter(user=user)
 
     def get_permissions(self):
-        if self.action in ("create", "issue_matricule", "send_activation_email", "revoke", "import_csv", "destroy"):
+        if self.action in ("create", "issue_matricule", "send_activation_email", "revoke", "suspend", "unsuspend", "import_csv", "destroy"):
             return [IsAdmissions()]
         return super().get_permissions()
 
@@ -156,6 +156,18 @@ class StudentAdminViewSet(viewsets.ModelViewSet):
     def revoke(self, request, pk=None):
         student = self.get_object()
         revoke_student(request.user, student, reason=request.data.get("reason", ""))
+        return Response(StudentProfileSerializer(student).data)
+
+    @action(detail=True, methods=["post"])
+    def suspend(self, request, pk=None):
+        student = self.get_object()
+        suspend_student(request.user, student, reason=request.data.get("reason", ""))
+        return Response(StudentProfileSerializer(student).data)
+
+    @action(detail=True, methods=["post"])
+    def unsuspend(self, request, pk=None):
+        student = self.get_object()
+        unsuspend_student(request.user, student, reason=request.data.get("reason", ""))
         return Response(StudentProfileSerializer(student).data)
 
     @action(detail=False, methods=["post"], url_path="import-csv")

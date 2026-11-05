@@ -211,6 +211,28 @@ class PaymentStatusView(APIView):
         return Response(PaymentAttemptSerializer(attempt).data)
 
 
+class PaymentCancelView(APIView):
+    """POST /api/payments/:reference/cancel – cancel an unpaid pending attempt."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, reference):
+        attempt = find_attempt(reference)
+        if attempt is None:
+            raise BusinessError("Payment reference not found.",
+                                code="PAYMENT_NOT_FOUND")
+        user = request.user
+        if not (has_role(user, "admin", "finance")
+                or attempt.invoice.student.user_id == user.id):
+            raise BusinessError("You can only cancel your own payments.",
+                                code="NOT_YOUR_PAYMENT")
+        if attempt.status == "pending":
+            attempt.status = "cancelled"
+            attempt.failure_reason = "Cancelled by user to switch payment method"
+            attempt.save(update_fields=["status", "failure_reason", "updated_at"])
+        return Response(PaymentAttemptSerializer(attempt).data)
+
+
 class MockSimulateView(APIView):
     """Sandbox-only helper: simulate the provider confirming a payment.
 

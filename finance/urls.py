@@ -3,7 +3,7 @@ from core.routers import OptionalSlashRouter as DefaultRouter
 
 from .views import (
     FeeScheduleViewSet, InvoicePaymentCreateView, InvoiceViewSet,
-    MockSimulateView, OfflineAdjustmentViewSet, PaymentStatusView,
+    MockSimulateView, OfflineAdjustmentViewSet, PaymentCancelView, PaymentStatusView,
     ReceiptViewSet, ReconciliationView, StudentFeesView, StudentMeView,
     notchpay_webhook, stripe_webhook,
 )
@@ -20,6 +20,8 @@ urlpatterns = [
     path("student/fees", StudentFeesView.as_view(), name="student-fees"),
     path("invoices/<int:invoice_id>/payments", InvoicePaymentCreateView.as_view(),
          name="invoice-payments"),
+    path("payments/<str:reference>/cancel", PaymentCancelView.as_view(),
+         name="payment-cancel"),
     path("payments/<str:reference>/status", PaymentStatusView.as_view(),
          name="payment-status"),
     path("payments/<str:reference>/mock-simulate", MockSimulateView.as_view(),

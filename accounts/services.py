@@ -280,3 +280,30 @@ def revoke_student(actor, student: StudentProfile, reason: str = "") -> StudentP
     audit("student.matricule_revoked", actor=actor, entity=student, reason=reason,
           summary={"matricule": student.matricule})
     return student
+
+@transaction.atomic
+def suspend_student(actor, student: StudentProfile, reason: str = "") -> StudentProfile:
+    """Suspend a student. Temporarily blocks login and participation."""
+    student.status = "suspended"
+    student.save(update_fields=["status", "updated_at"])
+    if student.user_id:
+        student.user.is_active = False
+        student.user.account_status = "suspended"
+        student.user.save(update_fields=["is_active", "account_status"])
+    audit("student.suspended", actor=actor, entity=student, reason=reason,
+          summary={"matricule": student.matricule})
+    return student
+
+
+@transaction.atomic
+def unsuspend_student(actor, student: StudentProfile, reason: str = "") -> StudentProfile:
+    """Unsuspend a student and restore active login access."""
+    student.status = "active"
+    student.save(update_fields=["status", "updated_at"])
+    if student.user_id:
+        student.user.is_active = True
+        student.user.account_status = "active"
+        student.user.save(update_fields=["is_active", "account_status"])
+    audit("student.unsuspended", actor=actor, entity=student, reason=reason,
+          summary={"matricule": student.matricule})
+    return student
