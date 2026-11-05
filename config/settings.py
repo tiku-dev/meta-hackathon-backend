@@ -192,7 +192,7 @@ DEFAULT_FEE_AMOUNT_XAF = DEFAULT_FEE_AMOUNT_USD
 DEFAULT_REGISTRATION_FEE_XAF = DEFAULT_REGISTRATION_FEE_USD
 DEFAULT_MAX_CREDITS = int(os.environ.get("DEFAULT_MAX_CREDITS", "30"))
 ACTIVATION_TOKEN_TTL_HOURS = int(os.environ.get("ACTIVATION_TOKEN_TTL_HOURS", "72"))
-FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://meta-hackathon-frontend-seven.vercel.app")
 
 # Payment provider: "mock" (labelled fake sandbox), "notchpay" (default),
 # "stripe". Real providers run in sandbox/test mode when *_test keys are
